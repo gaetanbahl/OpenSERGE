@@ -1,6 +1,6 @@
 import argparse, os, time, torch
 from torch.utils.data import DataLoader
-from .data.dataset import RoadTracerLike
+from .data.dataset import CityScale
 from .models.wrapper import OpenSERGE
 from .models.losses import openserge_losses
 from .utils import *
@@ -22,7 +22,7 @@ def parse_args():
 def main():
     args = parse_args()
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
-    ds = RoadTracerLike(args.data_root, 'train', img_size=args.img_size)
+    ds = CityScale(args.data_root, 'train', img_size=args.img_size)
     dl = DataLoader(ds, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
 
     model = OpenSERGE(backbone=args.backbone, k=args.k).to(device)

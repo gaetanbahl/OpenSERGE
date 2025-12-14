@@ -115,6 +115,7 @@ class CityScale(Dataset):
         >>> print(sample['junction_map'].shape)  # [1, 16, 16]
         >>> print(sample['offset_map'].shape)  # [2, 16, 16]
         >>> print(sample['offset_mask'].shape)  # [1, 16, 16]
+        >>> print(len(sample['edges']))  # number of edges in the graph
 
     Returns:
         Sample dict with keys:
@@ -122,8 +123,9 @@ class CityScale(Dataset):
             - 'junction_map': [1, h, w] binary junction map (1 = junction present)
             - 'offset_map': [2, h, w] offset from grid cell center to exact junction location
             - 'offset_mask': [1, h, w] mask indicating which cells have junctions
+            - 'edges': List of ((i1, j1), (i2, j2)) tuples representing edges in grid coordinates
             - 'meta': dict with 'region_id', 'crop_y0', 'crop_x0'
-        where h = H // stride, w = W // stride
+        where h = H // stride, w = W // stride, and (i, j) are grid indices from 0 to h-1, w-1
     """
     def __init__(self, data_root, split='train', img_size=512, stride=32, aug=True):
         """
@@ -172,9 +174,9 @@ class CityScale(Dataset):
         return graph
 
     def _rasterize_graph(self, graph: Dict, crop_y0: int, crop_x0: int,
-                        crop_h: int, crop_w: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+                        crop_h: int, crop_w: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[Tuple[Tuple[int, int], Tuple[int, int]]]]:
         """
-        Rasterize graph to junction map, offset map, and offset mask.
+        Rasterize graph to junction map, offset map, offset mask, and edge list.
 
         Args:
             graph: Dict mapping (y,x) node coords to list of (y,x) neighbor coords
@@ -185,6 +187,7 @@ class CityScale(Dataset):
             junction_map: [1, h', w'] binary junction map (1 = junction present)
             offset_map: [2, h', w'] offset from grid cell center to exact junction location
             offset_mask: [1, h', w'] mask indicating which cells have junctions
+            edges: List of ((i1, j1), (i2, j2)) edge pairs in grid coordinates
         """
         h = crop_h // self.stride
         w = crop_w // self.stride
@@ -192,6 +195,9 @@ class CityScale(Dataset):
         junction_map = np.zeros((1, h, w), dtype=np.float32)
         offset_map = np.zeros((2, h, w), dtype=np.float32)
         offset_mask = np.zeros((1, h, w), dtype=np.float32)
+
+        # Map from original (y,x) coordinates to grid cell (i,j) coordinates
+        node_to_cell = {}
 
         # Filter nodes that fall within the crop
         for node_coord in graph.keys():
@@ -214,6 +220,9 @@ class CityScale(Dataset):
             if not (0 <= cell_y < h and 0 <= cell_x < w):
                 continue
 
+            # Store mapping from node to grid cell
+            node_to_cell[node_coord] = (cell_y, cell_x)
+
             # Mark junction as present
             junction_map[0, cell_y, cell_x] = 1.0
             offset_mask[0, cell_y, cell_x] = 1.0
@@ -231,7 +240,22 @@ class CityScale(Dataset):
             offset_map[0, cell_y, cell_x] = offset_y / self.stride
             offset_map[1, cell_y, cell_x] = offset_x / self.stride
 
-        return junction_map, offset_map, offset_mask
+        # Extract edges between nodes that are both within the crop
+        edges = []
+        for src_node, neighbors in graph.items():
+            if src_node not in node_to_cell:
+                continue
+
+            src_cell = node_to_cell[src_node]
+
+            for dst_node in neighbors:
+                if dst_node not in node_to_cell:
+                    continue
+
+                dst_cell = node_to_cell[dst_node]
+                edges.append((src_cell, dst_cell))
+
+        return junction_map, offset_map, offset_mask, edges
 
     def __getitem__(self, i):
         sample_info = self.samples[i]
@@ -265,9 +289,13 @@ class CityScale(Dataset):
             crop = padded
 
         # Rasterize graph within crop
-        junction_map, offset_map, offset_mask = self._rasterize_graph(
+        junction_map, offset_map, offset_mask, edges = self._rasterize_graph(
             graph, y0, x0, crop_h, crop_w
         )
+
+        # Get grid dimensions
+        h = junction_map.shape[1]
+        w = junction_map.shape[2]
 
         # Apply data augmentation if enabled
         if self.split == 'train' and self.aug:
@@ -279,6 +307,9 @@ class CityScale(Dataset):
                 offset_map[1] = -offset_map[1]  # Flip x-offset sign
                 offset_mask = np.flip(offset_mask, axis=2).copy()
 
+                # Flip edge coordinates (j -> w-1-j)
+                edges = [((i1, w-1-j1), (i2, w-1-j2)) for (i1, j1), (i2, j2) in edges]
+
             # Random vertical flip
             if np.random.rand() > 0.5:
                 crop = np.flipud(crop).copy()
@@ -287,11 +318,15 @@ class CityScale(Dataset):
                 offset_map[0] = -offset_map[0]  # Flip y-offset sign
                 offset_mask = np.flip(offset_mask, axis=1).copy()
 
+                # Flip edge coordinates (i -> h-1-i)
+                edges = [((h-1-i1, j1), (h-1-i2, j2)) for (i1, j1), (i2, j2) in edges]
+
         sample = {
             'image': torch.from_numpy(crop).permute(2, 0, 1).float() / 255.0,
             'junction_map': torch.from_numpy(junction_map),
             'offset_map': torch.from_numpy(offset_map),
             'offset_mask': torch.from_numpy(offset_mask),
+            'edges': edges,
             'meta': {
                 'region_id': sample_info['region_id'],
                 'crop_y0': int(y0),

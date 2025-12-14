@@ -20,3 +20,44 @@ If you found this work interesting and used it for your research, consider citin
     year      = {2022},
     pages     = {1403-1412}
 }
+
+
+This repository is a clean-room, open-source re-implementation of the approach described in:
+
+> *Single-Shot End-to-End Road Graph Extraction*, CVPRW 2022.  
+> G. Bahl, M. Bahri, F. Lafarge.
+
+**High-level idea**: a fully-convolutional head detects road **points of interest** (junctions/turns/dead-ends) and regresses a 2D **offset** per cell; a lightweight GNN then predicts **edges** between detected points to produce a vector road graph in one pass.
+
+## What’s here
+- Minimal, framework-only PyTorch code (no third-party GNN libs required).
+- A tiny, readable GNN with **EdgeConv** and an MLP edge scorer.
+- A junction/offset detection head built on a standard CNN backbone.
+- Training & eval scaffolds, metrics hooks, and dataset stubs (RoadTracer-style).
+
+> ⚠️ This is a **reference scaffold**: you’ll need to connect your dataset and metrics (APLS, J-F1, P-F1). The code includes clear TODOs.
+
+## Quick start (conda)
+```bash
+conda create -n openserge python=3.10 -y
+conda activate openserge
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121  # adjust CUDA/CPU
+pip install numpy opencv-python shapely networkx tqdm
+```
+
+## Train (example)
+```bash
+python -m openserge.train   --data_root /path/to/RoadTracer   --epochs 50   --batch_size 4   --lr 1e-3   --backbone resnet50   --img_size 512   --junction_thresh 0.5
+```
+
+## Inference (tile an 8192² image)
+```bash
+python -m openserge.infer   --weights /path/to/ckpt.pt   --image /path/to/8192.png   --img_size 512   --stride 448   --junction_thresh 0.5   --k 4   --save_graph out.graph.json
+```
+
+## Notes
+- Metrics and exact training recipes vary per dataset; see inline comments for recommended settings from the paper.
+- For reproducible speed, consider export to TorchScript, quantization-aware training, and smaller backbones.
+
+## License
+MIT. See `LICENSE`.

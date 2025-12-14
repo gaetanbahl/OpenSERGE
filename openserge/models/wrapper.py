@@ -1,0 +1,66 @@
+from typing import Dict, Tuple
+import torch, torch.nn as nn, torch.nn.functional as F
+from .net import SingleShotRoadGraphNet
+from .gnn import RoadGraphGNN
+from ..utils import knn_graph, complete_graph
+
+class OpenSERGE(nn.Module):
+    def __init__(self, backbone='resnet50', nfeat=256, gnn_layers=(256,256,256), scorer_hidden=128, k: int=None):
+        super().__init__()
+        self.ss = SingleShotRoadGraphNet(backbone=backbone, nfeat=nfeat)
+        self.k = k  # if None -> complete graph, else k-NN prior
+        self.proj = nn.Identity()  # if you want extra projection on node feature map per-paper
+        self.gnn = RoadGraphGNN(c_in=nfeat, layers=gnn_layers, scorer_hidden=scorer_hidden)
+
+    def forward(self, images, j_thr=0.5, max_nodes=2000):
+        # Step 1: CNN
+        out = self.ss(images)
+        j_logits = out['junction_logits']  # [B,1,h,w]
+        offs = out['offset']               # [B,2,h,w]
+        nmap = out['node_feats_map']      # [B,C,h,w]
+        stride = out['stride']
+
+        B, _, h, w = j_logits.shape
+        results = []
+        for b in range(B):
+            j_log = j_logits[b,0]
+            j_prob = torch.sigmoid(j_log)
+            mask = j_prob > j_thr
+            if mask.sum() == 0:
+                results.append({'nodes': torch.empty((0,2), device=images.device), 'edges': torch.empty((0,2), dtype=torch.long, device=images.device)})
+                continue
+            idx = mask.nonzero(as_tuple=False)  # [N,2] (y,x)
+            if idx.size(0) > max_nodes:
+                # keep top-K by prob
+                vals = j_prob[idx[:,0], idx[:,1]]
+                topk = torch.topk(vals, max_nodes).indices
+                idx = idx[topk]
+            u_off = offs[b,0][idx[:,0], idx[:,1]]
+            v_off = offs[b,1][idx[:,0], idx[:,1]]
+            # Map to image coords
+            x = (idx[:,1].float() + 0.5 + u_off) * stride
+            y = (idx[:,0].float() + 0.5 + v_off) * stride
+            nodes_xy = torch.stack([x, y], dim=-1)  # [N,2]
+
+            # Node features from nmap at cell locations
+            nfeat = nmap[b,:,idx[:,0], idx[:,1]].transpose(0,1)  # [N,C]
+
+            # Build prior edges
+            if nodes_xy.size(0) <= 1:
+                edges = torch.empty((0,2), dtype=torch.long, device=images.device)
+                results.append({'nodes': nodes_xy, 'node_feats': nfeat, 'edges': edges})
+                continue
+            if self.k is None:
+                src, dst = complete_graph(nodes_xy.size(0), images.device)
+            else:
+                src, dst = knn_graph(nfeat, self.k)  # k-NN in feature space
+            # GNN message passing
+            x_emb = self.gnn(nfeat, src, dst)
+            # Edge scoring
+            logits = self.gnn.score_edges(x_emb, src, dst)
+            probs = torch.sigmoid(logits)
+            # Retain edges with p>0.5 (tunable)
+            keep = probs > 0.5
+            edges = torch.stack([src[keep], dst[keep]], dim=-1)
+            results.append({'nodes': nodes_xy, 'node_feats': x_emb, 'edges': edges, 'edge_probs': probs[keep]})
+        return {'cnn': out, 'graphs': results}

@@ -30,6 +30,8 @@ def parse_args():
                     help='Path to dataset root directory')
     ap.add_argument('--img_size', type=int, default=512,
                     help='Input image size')
+    ap.add_argument('--preload', action='store_true',
+                    help='Preload entire dataset into memory for faster training')
 
     # Model
     ap.add_argument('--backbone', type=str, default='resnet50',
@@ -263,10 +265,11 @@ def main():
 
     # Create datasets
     logger.info("Loading datasets...")
+    preload = config.get('preload', False)
     train_dataset = CityScale(config['data_root'], split='train',
-                             img_size=config['img_size'], aug=True)
+                             img_size=config['img_size'], aug=True, preload=preload)
     val_dataset = CityScale(config['data_root'], split='valid',
-                           img_size=config['img_size'], aug=False)
+                           img_size=config['img_size'], aug=False, preload=preload)
 
     logger.info(f"Train samples: {len(train_dataset)}")
     logger.info(f"Valid samples: {len(val_dataset)}")

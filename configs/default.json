@@ -2,6 +2,7 @@
   "experiment_name": "openserge_baseline",
   "data_root": "../Sat2Graph/data/",
   "img_size": 512,
+  "preload": false,
   "backbone": "resnet50",
   "k": 4,
   "epochs": 50,

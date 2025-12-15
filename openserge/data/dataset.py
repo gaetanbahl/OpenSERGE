@@ -127,7 +127,7 @@ class CityScale(Dataset):
             - 'meta': dict with 'region_id', 'crop_y0', 'crop_x0'
         where h = H // stride, w = W // stride, and (i, j) are grid indices from 0 to h-1, w-1
     """
-    def __init__(self, data_root, split='train', img_size=512, stride=32, aug=True):
+    def __init__(self, data_root, split='train', img_size=512, stride=32, aug=True, preload=False):
         """
         Args:
             data_root: Path to Sat2Graph/data/data directory
@@ -135,12 +135,14 @@ class CityScale(Dataset):
             img_size: Size of image crops (default 512)
             stride: Downsampling stride for junction/offset maps (default 32)
             aug: Whether to apply augmentation (default True)
+            preload: Whether to preload all data into memory (default False)
         """
         self.root = data_root
         self.split = split
         self.img_size = img_size
         self.stride = stride
         self.aug = aug
+        self.preload = preload
 
         # Load data split
         split_path = os.path.join(data_root, 'data_split.json')
@@ -163,6 +165,26 @@ class CityScale(Dataset):
                     'img_path': img_path,
                     'graph_path': graph_path
                 })
+
+        # Preload data into memory if requested
+        self.preloaded_data = None
+        if self.preload:
+            print(f"Preloading {len(self.samples)} samples into memory...")
+            self.preloaded_data = []
+            for sample_info in self.samples:
+                # Load image
+                img = cv2.imread(sample_info['img_path'], cv2.IMREAD_COLOR)
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+                # Load graph
+                graph = self._load_graph(sample_info['graph_path'])
+
+                self.preloaded_data.append({
+                    'region_id': sample_info['region_id'],
+                    'image': img,
+                    'graph': graph
+                })
+            print(f"Preloading complete!")
 
     def __len__(self):
         return len(self.samples)
@@ -264,15 +286,22 @@ class CityScale(Dataset):
         return junction_map, offset_map, offset_mask, edges
 
     def __getitem__(self, i):
-        sample_info = self.samples[i]
+        # Use preloaded data if available
+        if self.preloaded_data is not None:
+            data = self.preloaded_data[i]
+            img = data['image'].copy()  # Copy to avoid modifying cached data
+            graph = data['graph']
+            region_id = data['region_id']
+        else:
+            sample_info = self.samples[i]
+            # Load image
+            img = cv2.imread(sample_info['img_path'], cv2.IMREAD_COLOR)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            # Load graph
+            graph = self._load_graph(sample_info['graph_path'])
+            region_id = sample_info['region_id']
 
-        # Load image
-        img = cv2.imread(sample_info['img_path'], cv2.IMREAD_COLOR)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         H, W = img.shape[:2]
-
-        # Load graph
-        graph = self._load_graph(sample_info['graph_path'])
 
         # Random crop for training, center crop for validation/test
         if self.split == 'train' and self.aug:
@@ -334,7 +363,7 @@ class CityScale(Dataset):
             'offset_mask': torch.from_numpy(offset_mask),
             'edges': edges,
             'meta': {
-                'region_id': sample_info['region_id'],
+                'region_id': region_id,
                 'crop_y0': int(y0),
                 'crop_x0': int(x0)
             }

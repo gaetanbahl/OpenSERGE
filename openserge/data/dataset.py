@@ -223,8 +223,10 @@ class CityScale(Dataset):
             # Store mapping from node to grid cell
             node_to_cell[node_coord] = (cell_y, cell_x)
 
+            degree = len(graph[node_coord])
+
             # Mark junction as present
-            junction_map[0, cell_y, cell_x] = 1.0
+            junction_map[0, cell_y, cell_x] += degree**2  # accumulate degree if multiple nodes fall in same cell
             offset_mask[0, cell_y, cell_x] = 1.0
 
             # Calculate offset from cell center to exact node location
@@ -237,8 +239,12 @@ class CityScale(Dataset):
             offset_x = rel_x - cell_center_x
 
             # Normalize to [-0.5, 0.5] range by dividing by stride
-            offset_map[0, cell_y, cell_x] = offset_y / self.stride
-            offset_map[1, cell_y, cell_x] = offset_x / self.stride
+            offset_map[0, cell_y, cell_x] += offset_y / self.stride * degree**2
+            offset_map[1, cell_y, cell_x] += offset_x / self.stride * degree**2
+
+        # Average offsets if multiple nodes fall in the same cell
+        offset_map /= np.maximum(junction_map, 1e-6)
+        junction_map = np.clip(junction_map, 0, 1)
 
         # Extract edges between nodes that are both within the crop
         edges = []

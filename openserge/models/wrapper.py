@@ -2,7 +2,7 @@ from typing import Dict, Tuple
 import torch, torch.nn as nn, torch.nn.functional as F
 from .net import SingleShotRoadGraphNet
 from .gnn import RoadGraphGNN
-from ..utils import knn_graph, complete_graph
+from ..utils.graph import knn_graph, complete_graph
 
 class OpenSERGE(nn.Module):
     def __init__(self, backbone='resnet50', nfeat=256, gnn_layers=(256,256,256), scorer_hidden=128, k: int=None):
@@ -62,5 +62,13 @@ class OpenSERGE(nn.Module):
             # Retain edges with p>0.5 (tunable)
             keep = probs > 0.5
             edges = torch.stack([src[keep], dst[keep]], dim=-1)
-            results.append({'nodes': nodes_xy, 'node_feats': x_emb, 'edges': edges, 'edge_probs': probs[keep]})
+            results.append({
+                'nodes': nodes_xy,
+                'node_feats': x_emb,
+                'edges': edges,
+                'edge_probs': probs[keep],
+                'edge_logits': logits,  # All edge logits before filtering
+                'edge_src': src,  # Source indices for all edges
+                'edge_dst': dst   # Destination indices for all edges
+            })
         return {'cnn': out, 'graphs': results}

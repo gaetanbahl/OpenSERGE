@@ -1,7 +1,7 @@
 from typing import Tuple, Dict, Optional
 import torch, torch.nn as nn, torch.nn.functional as F
 from torchvision.models import resnet18, resnet50
-from ..utils import build_grid
+from ..utils.utils import build_grid
 
 class ConvBNReLU(nn.Module):
     def __init__(self, c_in, c_out, k=3):

@@ -1,4 +1,3 @@
-from typing import Tuple
 import torch, torch.nn as nn, torch.nn.functional as F
 
 class EdgeConv(nn.Module):

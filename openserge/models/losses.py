@@ -1,6 +1,29 @@
 from typing import Dict
 import torch, torch.nn.functional as F
-from ..utils import sigmoid_focal_loss, masked_mse
+
+def sigmoid_focal_loss(inputs, targets, alpha: float=0.25, gamma: float=2.0, reduction='mean'):
+    p = torch.sigmoid(inputs)
+    ce = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+    p_t = p*targets + (1-p)*(1-targets)
+    loss = ce * ((1-p_t)**gamma)
+    if alpha >= 0:
+        alpha_t = alpha*targets + (1-alpha)*(1-targets)
+        loss = alpha_t * loss
+    if reduction == 'mean':
+        return loss.mean()
+    elif reduction == 'sum':
+        return loss.sum()
+    return loss
+
+def masked_mse(pred, target, mask):
+    # pred, target: [..., D], mask: [..., 1] or [...]
+    mask = mask.float()
+    while mask.ndim < pred.ndim:
+        mask = mask.unsqueeze(-1)
+    diff = (pred - target) ** 2
+    num = (diff * mask).sum()
+    den = mask.sum() * pred.shape[-1]
+    return num / (den.clamp_min(1.0))
 
 def openserge_losses(outputs, targets, j_alpha=0.25, j_gamma=2.0):
     """Compute junctionness focal loss, offset masked MSE, and edge BCE.
@@ -25,16 +48,43 @@ def openserge_losses(outputs, targets, j_alpha=0.25, j_gamma=2.0):
 
     # Edge loss: sum BCE over batch
     Le = 0.0
+    num_edges = 0
     graphs = outputs['graphs']
-    for b, (src, dst, y) in enumerate(targets.get('edge_lists', [])):
-        # We assume node indexing already aligned with model's node order for batch b
-        # y in {0,1} for each edge (src,dst)
-        if graphs[b]['nodes'].numel() == 0 or y.numel()==0:
+    for b, (src_gt, dst_gt, labels_gt) in enumerate(targets.get('edge_lists', [])):
+        # Check if this batch item has any nodes/edges
+        if graphs[b]['nodes'].numel() == 0 or labels_gt.numel() == 0:
             continue
-        x = graphs[b]['node_feats']
-        logits = outputs['cnn']['junction_logits'].new_zeros(y.shape[0])  # placeholder on same device
-        # To compute logits, we need scorer again; easiest is to re-score via wrapper? (skipping)
-        # In practice, pass scorer through outputs to avoid recomputation; here we assume y already sampled from scored edges.
-        # So we penalize FN/FP via proportion — as a minimal placeholder.
-        Le = Le + F.binary_cross_entropy(torch.full_like(y, 0.5), y.float())  # encourage balanced positives
-    return {'L_junction': Lj, 'L_offset': Lo, 'L_edge': Le if isinstance(Le, torch.Tensor) else torch.tensor(Le, device=j_logits.device) }
+
+        # Get edge info from model
+        edge_logits = graphs[b].get('edge_logits')
+        edge_src = graphs[b].get('edge_src')
+        edge_dst = graphs[b].get('edge_dst')
+
+        if edge_logits is None or edge_logits.numel() == 0:
+            continue
+
+        # Create a lookup dict from ground truth edges to labels
+        # Handle both complete graph (model) and different graph structures
+        gt_edge_dict = {}
+        for i in range(src_gt.size(0)):
+            s, d = src_gt[i].item(), dst_gt[i].item()
+            gt_edge_dict[(s, d)] = labels_gt[i].item()
+
+        # Align labels with model's edges
+        aligned_labels = torch.zeros_like(edge_logits)
+        for i in range(edge_src.size(0)):
+            s, d = edge_src[i].item(), edge_dst[i].item()
+            # Look up label; default to 0 if edge not in GT
+            aligned_labels[i] = gt_edge_dict.get((s, d), 0.0)
+
+        # Compute BCE loss
+        Le = Le + F.binary_cross_entropy_with_logits(edge_logits, aligned_labels, reduction='sum')
+        num_edges += edge_logits.numel()
+
+    # Average over all edges in the batch
+    if num_edges > 0:
+        Le = Le / num_edges
+    else:
+        Le = torch.tensor(0.0, device=j_logits.device)
+
+    return {'L_junction': Lj, 'L_offset': Lo, 'L_edge': Le}

@@ -1,6 +1,6 @@
 {
   "experiment_name": "openserge_baseline",
-  "data_root": "/home/gbahl/roads/Sat2Graph/data/data",
+  "data_root": "../Sat2Graph/data/",
   "img_size": 512,
   "backbone": "resnet18",
   "k": 4,

@@ -16,7 +16,8 @@ from tqdm import tqdm
 
 from .data.dataset import CityScale
 from .models.net import SingleShotRoadGraphNet
-from .utils import sigmoid_focal_loss, masked_mse
+from .models.losses import sigmoid_focal_loss, masked_mse
+from .utils.graph import collate_fn
 
 
 def parse_args():
@@ -273,14 +274,17 @@ def main():
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
-        pin_memory=True
+        pin_memory=True,
+        collate_fn=collate_fn
     )
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
-        pin_memory=True
+        pin_memory=True,
+        collate_fn=collate_fn
     )
 
     # Create model

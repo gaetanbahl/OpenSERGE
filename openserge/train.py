@@ -40,6 +40,10 @@ def parse_args():
                     help='Backbone architecture')
     ap.add_argument('--k', type=int, default=None,
                     help='k for k-NN graph prior; None=complete graph')
+    ap.add_argument('--pretrained_cnn', type=str, default=None,
+                    help='Path to pre-trained SingleShotRoadGraphNet checkpoint')
+    ap.add_argument('--freeze_pretrained_cnn', action='store_true',
+                    help='Freeze pre-trained CNN weights (only train GNN)')
 
     # Training
     ap.add_argument('--epochs', type=int, default=50,
@@ -134,10 +138,14 @@ def train_epoch(model, dataloader, optimizer, device, config, writer, epoch):
         out = model(images, j_thr=config['junction_thresh'])
         losses = openserge_losses(out, targets)
 
-        # Weighted loss
-        loss = (config['loss_weight_junction'] * losses['L_junction'] +
-                config['loss_weight_offset'] * losses['L_offset'] +
-                config['loss_weight_edge'] * losses['L_edge'])
+        # Weighted loss - only include components with non-zero weights
+        loss = torch.tensor(0.0, device=device, requires_grad=True)
+        if config['loss_weight_junction'] > 0:
+            loss = loss + config['loss_weight_junction'] * losses['L_junction']
+        if config['loss_weight_offset'] > 0:
+            loss = loss + config['loss_weight_offset'] * losses['L_offset']
+        if config['loss_weight_edge'] > 0:
+            loss = loss + config['loss_weight_edge'] * losses['L_edge']
 
         # Backward pass
         optimizer.zero_grad(set_to_none=True)
@@ -218,10 +226,14 @@ def validate_epoch(model, dataloader, device, config, writer, epoch):
             out = model(images, j_thr=config['junction_thresh'])
             losses = openserge_losses(out, targets)
 
-            # Weighted loss
-            loss = (config['loss_weight_junction'] * losses['L_junction'] +
-                    config['loss_weight_offset'] * losses['L_offset'] +
-                    config['loss_weight_edge'] * losses['L_edge'])
+            # Weighted loss - only include components with non-zero weights
+            loss = torch.tensor(0.0, device=device, requires_grad=False)
+            if config['loss_weight_junction'] > 0:
+                loss = loss + config['loss_weight_junction'] * losses['L_junction']
+            if config['loss_weight_offset'] > 0:
+                loss = loss + config['loss_weight_offset'] * losses['L_offset']
+            if config['loss_weight_edge'] > 0:
+                loss = loss + config['loss_weight_edge'] * losses['L_edge']
 
             # Accumulate losses
             epoch_losses['total'] += loss.item()
@@ -302,6 +314,8 @@ def main():
             'img_size': config['img_size'],
             'backbone': config.get('backbone', 'resnet50'),
             'k': config.get('k', 'None'),
+            'pretrained_cnn': config.get('pretrained_cnn', 'None'),
+            'freeze_pretrained_cnn': config.get('freeze_pretrained_cnn', False),
             'epochs': config['epochs'],
             'batch_size': config['batch_size'],
             'lr': config['lr'],
@@ -371,21 +385,72 @@ def main():
     logger.info("Creating model...")
     model = OpenSERGE(backbone=config['backbone'], k=config.get('k')).to(device)
 
+    # Load pre-trained CNN weights if specified
+    if config.get('pretrained_cnn'):
+        logger.info(f"Loading pre-trained CNN from: {config['pretrained_cnn']}")
+        pretrained_checkpoint = torch.load(config['pretrained_cnn'], map_location=device)
+
+        # Extract SingleShotRoadGraphNet state dict
+        if 'model_state_dict' in pretrained_checkpoint:
+            # It's a full training checkpoint
+            full_state_dict = pretrained_checkpoint['model_state_dict']
+            # Filter keys that belong to SingleShotRoadGraphNet (keys starting with 'ss.')
+            cnn_state_dict = {k[3:]: v for k, v in full_state_dict.items() if k.startswith('ss.')}
+
+            if len(cnn_state_dict) == 0:
+                logger.warning("No 'ss.' prefix found in checkpoint. Attempting direct load...")
+                cnn_state_dict = full_state_dict
+        else:
+            # It's a direct state dict
+            cnn_state_dict = pretrained_checkpoint
+
+        # Load into the CNN component
+        missing_keys, unexpected_keys = model.ss.load_state_dict(cnn_state_dict, strict=False)
+
+        if missing_keys:
+            logger.warning(f"Missing keys in pre-trained CNN: {missing_keys}")
+        if unexpected_keys:
+            logger.warning(f"Unexpected keys in pre-trained CNN: {unexpected_keys}")
+
+        logger.info("Pre-trained CNN weights loaded successfully!")
+
+        # Optionally freeze CNN weights
+        if config.get('freeze_pretrained_cnn', False):
+            logger.info("Freezing pre-trained CNN weights...")
+            for param in model.ss.parameters():
+                param.requires_grad = False
+            logger.info("CNN weights frozen. Only GNN will be trained.")
+
+            # When CNN is frozen, junction and offset losses don't contribute gradients
+            # Automatically set their weights to 0 to avoid gradient computation issues
+            if config.get('loss_weight_junction', 1.0) > 0 or config.get('loss_weight_offset', 1.0) > 0:
+                logger.warning("CNN is frozen but junction/offset loss weights are > 0.")
+                logger.warning("Setting junction_weight=0 and offset_weight=0 to avoid gradient errors.")
+                logger.warning("Only edge loss will be used for training the GNN.")
+                config['loss_weight_junction'] = 0.0
+                config['loss_weight_offset'] = 0.0
+
     # Count parameters
     num_params = sum(p.numel() for p in model.parameters())
     num_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Model parameters: {num_params:,} (trainable: {num_trainable:,})")
 
+    # Verify we have trainable parameters
+    if num_trainable == 0:
+        raise ValueError("No trainable parameters! Check your freeze settings.")
+
     # Watch model with W&B
     if not config.get('disable_wandb', False):
         wandb.watch(model, log='all', log_freq=100)
 
-    # Create optimizer
+    # Create optimizer (only for trainable parameters)
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.Adam(
-        model.parameters(),
+        trainable_params,
         lr=config['lr'],
         weight_decay=config.get('weight_decay', 1e-4)
     )
+    logger.info(f"Optimizer created with {len(trainable_params)} parameter groups")
 
     # Resume from checkpoint if specified
     start_epoch = 1

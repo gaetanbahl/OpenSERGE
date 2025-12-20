@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+import wandb
 
 from .data.dataset import CityScale
 from .models.wrapper import OpenSERGE
@@ -80,6 +81,18 @@ def parse_args():
     ap.add_argument('--experiment_name', type=str, default=None,
                     help='Experiment name for logging')
 
+    # Weights & Biases
+    ap.add_argument('--wandb_project', type=str, default='openserge',
+                    help='W&B project name')
+    ap.add_argument('--wandb_entity', type=str, default=None,
+                    help='W&B entity (team) name')
+    ap.add_argument('--wandb_run_name', type=str, default=None,
+                    help='W&B run name (default: auto-generated)')
+    ap.add_argument('--wandb_tags', type=str, nargs='*', default=None,
+                    help='W&B run tags')
+    ap.add_argument('--disable_wandb', action='store_true',
+                    help='Disable W&B logging')
+
     # System
     ap.add_argument('--device', type=str, default='cuda',
                     help='Device to use (cuda/cpu)')
@@ -146,13 +159,26 @@ def train_epoch(model, dataloader, optimizer, device, config, writer, epoch):
             'L_tot': f"{loss.item():.4f}"
         })
 
-        # Log to tensorboard (every 10 batches)
-        if writer and batch_idx % 10 == 0:
+        # Log to tensorboard and W&B (every 10 batches)
+        if batch_idx % 10 == 0:
             global_step = (epoch - 1) * len(dataloader) + batch_idx
-            writer.add_scalar('Train/Loss_Total', loss.item(), global_step)
-            writer.add_scalar('Train/Loss_Junction', losses['L_junction'].item(), global_step)
-            writer.add_scalar('Train/Loss_Offset', losses['L_offset'].item(), global_step)
-            writer.add_scalar('Train/Loss_Edge', losses['L_edge'].item(), global_step)
+
+            # TensorBoard logging
+            if writer:
+                writer.add_scalar('Train/Loss_Total', loss.item(), global_step)
+                writer.add_scalar('Train/Loss_Junction', losses['L_junction'].item(), global_step)
+                writer.add_scalar('Train/Loss_Offset', losses['L_offset'].item(), global_step)
+                writer.add_scalar('Train/Loss_Edge', losses['L_edge'].item(), global_step)
+
+            # W&B logging
+            if not config.get('disable_wandb', False):
+                wandb.log({
+                    'train/loss_total': loss.item(),
+                    'train/loss_junction': losses['L_junction'].item(),
+                    'train/loss_offset': losses['L_offset'].item(),
+                    'train/loss_edge': losses['L_edge'].item(),
+                    'train/epoch': epoch,
+                }, step=global_step)
 
     # Average losses
     for key in epoch_losses:
@@ -223,6 +249,16 @@ def validate_epoch(model, dataloader, device, config, writer, epoch):
         writer.add_scalar('Valid/Loss_Offset', epoch_losses['offset'], epoch)
         writer.add_scalar('Valid/Loss_Edge', epoch_losses['edge'], epoch)
 
+    # Log to W&B
+    if not config.get('disable_wandb', False):
+        wandb.log({
+            'val/loss_total': epoch_losses['total'],
+            'val/loss_junction': epoch_losses['junction'],
+            'val/loss_offset': epoch_losses['offset'],
+            'val/loss_edge': epoch_losses['edge'],
+            'epoch': epoch,
+        })  # No step parameter - let wandb auto-increment
+
     return epoch_losses
 
 
@@ -258,6 +294,44 @@ def main():
 
     # Setup tensorboard
     writer = SummaryWriter(exp_dir / 'tensorboard')
+
+    # Setup Weights & Biases
+    if not config.get('disable_wandb', False):
+        wandb_config = {
+            'data_root': config.get('data_root', 'N/A'),
+            'img_size': config['img_size'],
+            'backbone': config.get('backbone', 'resnet50'),
+            'k': config.get('k', 'None'),
+            'epochs': config['epochs'],
+            'batch_size': config['batch_size'],
+            'lr': config['lr'],
+            'weight_decay': config.get('weight_decay', 1e-4),
+            'junction_thresh': config.get('junction_thresh', 0.5),
+            'loss_weight_junction': config.get('loss_weight_junction', 1.0),
+            'loss_weight_offset': config.get('loss_weight_offset', 1.0),
+            'loss_weight_edge': config.get('loss_weight_edge', 1.0),
+            'early_stop_patience': config.get('early_stop_patience', 10),
+            'min_delta': config.get('min_delta', 1e-4),
+            'seed': config['seed'],
+            'preload': config.get('preload', False),
+        }
+
+        wandb.init(
+            project=config.get('wandb_project', 'openserge'),
+            entity=config.get('wandb_entity'),
+            name=config.get('wandb_run_name', config['experiment_name']),
+            tags=config.get('wandb_tags'),
+            config=wandb_config,
+            dir=str(exp_dir)
+        )
+
+        # Watch model gradients and parameters
+        # wandb.watch(model) will be called after model is created
+
+        logger.info(f"W&B project: {config.get('wandb_project', 'openserge')}")
+        logger.info(f"W&B run: {wandb.run.name if wandb.run else 'N/A'}")
+    else:
+        logger.info("W&B logging disabled")
 
     # Setup device
     device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
@@ -301,6 +375,10 @@ def main():
     num_params = sum(p.numel() for p in model.parameters())
     num_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Model parameters: {num_params:,} (trainable: {num_trainable:,})")
+
+    # Watch model with W&B
+    if not config.get('disable_wandb', False):
+        wandb.watch(model, log='all', log_freq=100)
 
     # Create optimizer
     optimizer = torch.optim.Adam(
@@ -366,12 +444,38 @@ def main():
             best_val_loss = val_losses['total']
             logger.info(f"New best validation loss: {best_val_loss:.4f}")
 
+            # Log best validation loss to W&B
+            if not config.get('disable_wandb', False):
+                wandb.log({'val/best_loss': best_val_loss})
+
         # Save checkpoint
         if epoch % config['save_freq'] == 0 or is_best:
             save_path = checkpoint_dir / f'checkpoint_epoch{epoch}.pt'
             save_checkpoint(model, optimizer, epoch, config, save_path,
                           is_best, train_losses, val_losses)
             logger.info(f"Saved checkpoint: {save_path}")
+
+            # Log checkpoint to W&B
+            if not config.get('disable_wandb', False):
+                artifact = wandb.Artifact(
+                    name=f"checkpoint_epoch{epoch}",
+                    type='model',
+                    description=f"Model checkpoint at epoch {epoch}"
+                )
+                artifact.add_file(str(save_path))
+                wandb.log_artifact(artifact)
+
+                # Log best model separately
+                if is_best:
+                    best_model_path = checkpoint_dir / 'best_model.pt'
+                    if best_model_path.exists():
+                        best_artifact = wandb.Artifact(
+                            name='best_model',
+                            type='model',
+                            description=f"Best model (epoch {epoch}, val_loss={best_val_loss:.4f})"
+                        )
+                        best_artifact.add_file(str(best_model_path))
+                        wandb.log_artifact(best_artifact)
 
         # Early stopping check
         if early_stopping(val_losses['total']):
@@ -380,7 +484,10 @@ def main():
 
         # Log learning rate
         current_lr = optimizer.param_groups[0]['lr']
-        writer.add_scalar('Train/LearningRate', current_lr, epoch)
+        if writer:
+            writer.add_scalar('Train/LearningRate', current_lr, epoch)
+        if not config.get('disable_wandb', False):
+            wandb.log({'train/learning_rate': current_lr})
 
     # Save final checkpoint
     final_path = checkpoint_dir / 'final_model.pt'
@@ -395,7 +502,38 @@ def main():
     logger.info(f"Training completed! Best validation loss: {best_val_loss:.4f}")
     logger.info(f"Results saved to: {exp_dir}")
 
-    writer.close()
+    # Log final artifacts to W&B
+    if not config.get('disable_wandb', False):
+        # Log final model
+        final_artifact = wandb.Artifact(
+            name='final_model',
+            type='model',
+            description=f"Final model after {epoch} epochs"
+        )
+        final_artifact.add_file(str(final_path))
+        wandb.log_artifact(final_artifact)
+
+        # Log training history
+        history_artifact = wandb.Artifact(
+            name='training_history',
+            type='results',
+            description='Training and validation loss history'
+        )
+        history_artifact.add_file(str(history_path))
+        wandb.log_artifact(history_artifact)
+
+        # Log final summary metrics
+        wandb.summary['best_val_loss'] = best_val_loss
+        wandb.summary['final_epoch'] = epoch
+        wandb.summary['total_params'] = num_params
+        wandb.summary['trainable_params'] = num_trainable
+
+        # Finish W&B run
+        wandb.finish()
+        logger.info("W&B run finished successfully")
+
+    if writer:
+        writer.close()
 
 
 if __name__ == '__main__':

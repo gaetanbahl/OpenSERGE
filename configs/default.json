@@ -19,6 +19,11 @@
   "save_freq": 5,
   "resume": null,
   "log_dir": "logs",
+  "wandb_project": "openserge",
+  "wandb_entity": null,
+  "wandb_run_name": null,
+  "wandb_tags": null,
+  "disable_wandb": false,
   "device": "cuda",
   "num_workers": 4,
   "seed": 42

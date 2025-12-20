@@ -127,7 +127,7 @@ class CityScale(Dataset):
             - 'meta': dict with 'region_id', 'crop_y0', 'crop_x0'
         where h = H // stride, w = W // stride, and (i, j) are grid indices from 0 to h-1, w-1
     """
-    def __init__(self, data_root, split='train', img_size=512, stride=32, aug=True, preload=False):
+    def __init__(self, data_root, split='train', img_size=512, stride=32, aug=True, preload=False, skip_edges=False):
         """
         Args:
             data_root: Path to Sat2Graph/data/data directory
@@ -136,6 +136,7 @@ class CityScale(Dataset):
             stride: Downsampling stride for junction/offset maps (default 32)
             aug: Whether to apply augmentation (default True)
             preload: Whether to preload all data into memory (default False)
+            skip_edges: Whether to skip edge extraction (default False, set True for junction-only training)
         """
         self.root = data_root
         self.split = split
@@ -143,6 +144,7 @@ class CityScale(Dataset):
         self.stride = stride
         self.aug = aug
         self.preload = preload
+        self.skip_edges = skip_edges
 
         # Load data split
         split_path = os.path.join(data_root, 'data_split.json')
@@ -268,20 +270,21 @@ class CityScale(Dataset):
         offset_map /= np.maximum(junction_map, 1e-6)
         junction_map = np.clip(junction_map, 0, 1)
 
-        # Extract edges between nodes that are both within the crop
+        # Extract edges between nodes that are both within the crop (skip if not needed)
         edges = []
-        for src_node, neighbors in graph.items():
-            if src_node not in node_to_cell:
-                continue
-
-            src_cell = node_to_cell[src_node]
-
-            for dst_node in neighbors:
-                if dst_node not in node_to_cell:
+        if not self.skip_edges:
+            for src_node, neighbors in graph.items():
+                if src_node not in node_to_cell:
                     continue
 
-                dst_cell = node_to_cell[dst_node]
-                edges.append((src_cell, dst_cell))
+                src_cell = node_to_cell[src_node]
+
+                for dst_node in neighbors:
+                    if dst_node not in node_to_cell:
+                        continue
+
+                    dst_cell = node_to_cell[dst_node]
+                    edges.append((src_cell, dst_cell))
 
         return junction_map, offset_map, offset_mask, edges
 
@@ -342,8 +345,9 @@ class CityScale(Dataset):
                 offset_map[1] = -offset_map[1]  # Flip x-offset sign
                 offset_mask = np.flip(offset_mask, axis=2).copy()
 
-                # Flip edge coordinates (j -> w-1-j)
-                edges = [((i1, w-1-j1), (i2, w-1-j2)) for (i1, j1), (i2, j2) in edges]
+                # Flip edge coordinates (j -> w-1-j) - only if edges were computed
+                if not self.skip_edges:
+                    edges = [((i1, w-1-j1), (i2, w-1-j2)) for (i1, j1), (i2, j2) in edges]
 
             # Random vertical flip
             if np.random.rand() > 0.5:
@@ -353,8 +357,9 @@ class CityScale(Dataset):
                 offset_map[0] = -offset_map[0]  # Flip y-offset sign
                 offset_mask = np.flip(offset_mask, axis=1).copy()
 
-                # Flip edge coordinates (i -> h-1-i)
-                edges = [((h-1-i1, j1), (h-1-i2, j2)) for (i1, j1), (i2, j2) in edges]
+                # Flip edge coordinates (i -> h-1-i) - only if edges were computed
+                if not self.skip_edges:
+                    edges = [((h-1-i1, j1), (h-1-i2, j2)) for (i1, j1), (i2, j2) in edges]
 
         sample = {
             'image': torch.from_numpy(crop).permute(2, 0, 1).float() / 255.0,

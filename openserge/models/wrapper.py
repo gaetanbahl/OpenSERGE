@@ -12,7 +12,7 @@ class OpenSERGE(nn.Module):
         self.proj = nn.Identity()  # if you want extra projection on node feature map per-paper
         self.gnn = RoadGraphGNN(c_in=nfeat, layers=gnn_layers, scorer_hidden=scorer_hidden)
 
-    def forward(self, images, j_thr=0.5, max_nodes=2000):
+    def forward(self, images, j_thr=0.5, e_thr=0.5, max_nodes=2000):
         # Step 1: CNN
         out = self.ss(images)
         j_logits = out['junction_logits']  # [B,1,h,w]
@@ -60,7 +60,7 @@ class OpenSERGE(nn.Module):
             logits = self.gnn.score_edges(x_emb, src, dst)
             probs = torch.sigmoid(logits)
             # Retain edges with p>0.5 (tunable)
-            keep = probs > 0.5
+            keep = probs > e_thr
             edges = torch.stack([src[keep], dst[keep]], dim=-1)
             results.append({
                 'nodes': nodes_xy,

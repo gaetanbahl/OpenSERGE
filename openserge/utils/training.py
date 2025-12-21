@@ -26,11 +26,11 @@ def save_checkpoint(model, optimizer, epoch, config, save_path, is_best=False,
 
 def load_checkpoint(checkpoint_path, model, optimizer=None):
     """Load model checkpoint."""
-    checkpoint = torch.load(checkpoint_path)
+    checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
     model.load_state_dict(checkpoint['model_state_dict'])
 
-    if optimizer is not None:
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    # if optimizer is not None:
+    #     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
     return checkpoint['epoch'], checkpoint.get('config', {}), \
            checkpoint.get('train_losses'), checkpoint.get('val_losses')

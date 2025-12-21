@@ -1,8 +1,8 @@
 import argparse
 
 def parse_args():
-    """Parse command line arguments."""
-    ap = argparse.ArgumentParser(description='Train junction detection on CityScale dataset')
+    """Parse command line arguments for OpenSERGE training."""
+    ap = argparse.ArgumentParser(description='Train OpenSERGE road graph extraction model')
 
     # Config file
     ap.add_argument('--config', type=str, default=None,
@@ -20,8 +20,12 @@ def parse_args():
     ap.add_argument('--backbone', type=str, default='resnet50',
                     choices=['resnet18', 'resnet50'],
                     help='Backbone architecture')
-    ap.add_argument('--nfeat', type=int, default=256,
-                    help='Number of feature channels')
+    ap.add_argument('--k', type=int, default=None,
+                    help='k for k-NN graph prior; None=complete graph')
+    ap.add_argument('--pretrained_cnn', type=str, default=None,
+                    help='Path to pre-trained SingleShotRoadGraphNet checkpoint')
+    ap.add_argument('--freeze_pretrained_cnn', action='store_true',
+                    help='Freeze pre-trained CNN weights (only train GNN)')
 
     # Training
     ap.add_argument('--epochs', type=int, default=50,
@@ -32,16 +36,16 @@ def parse_args():
                     help='Learning rate')
     ap.add_argument('--weight_decay', type=float, default=1e-4,
                     help='Weight decay for optimizer')
+    ap.add_argument('--junction_thresh', type=float, default=0.5,
+                    help='Junction threshold for inference')
 
     # Loss weights
     ap.add_argument('--loss_weight_junction', type=float, default=1.0,
                     help='Weight for junction loss')
     ap.add_argument('--loss_weight_offset', type=float, default=1.0,
                     help='Weight for offset loss')
-    ap.add_argument('--focal_alpha', type=float, default=0.25,
-                    help='Focal loss alpha parameter')
-    ap.add_argument('--focal_gamma', type=float, default=2.0,
-                    help='Focal loss gamma parameter')
+    ap.add_argument('--loss_weight_edge', type=float, default=1.0,
+                    help='Weight for edge loss')
 
     # Early stopping
     ap.add_argument('--early_stop_patience', type=int, default=10,
@@ -55,7 +59,7 @@ def parse_args():
     ap.add_argument('--save_freq', type=int, default=5,
                     help='Save checkpoint every N epochs')
     ap.add_argument('--resume', type=str, default=None,
-                    help='Path to checkpoint to resume from')
+                    help='Path to full OpenSERGE checkpoint to resume training from')
 
     # Logging
     ap.add_argument('--log_dir', type=str, default='logs',
@@ -64,8 +68,8 @@ def parse_args():
                     help='Experiment name for logging')
 
     # Weights & Biases
-    ap.add_argument('--wandb_project', type=str, default='openserge_junction',
-                    help='W&B project name (default: openserge_junction)')
+    ap.add_argument('--wandb_project', type=str, default='openserge',
+                    help='W&B project name')
     ap.add_argument('--wandb_entity', type=str, default=None,
                     help='W&B entity (team) name')
     ap.add_argument('--wandb_run_name', type=str, default=None,

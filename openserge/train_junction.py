@@ -3,7 +3,6 @@ Training script for junction detection (backbone + junction/offset head only).
 This script trains a simplified version of OpenSERGE focusing only on the
 junction detection and offset regression tasks, without the GNN edge prediction.
 """
-import argparse
 import time
 import json
 import logging
@@ -22,92 +21,7 @@ from .models.net import SingleShotRoadGraphNet
 from .models.losses import sigmoid_focal_loss, masked_mse
 from .utils.graph import collate_fn
 from .utils.training import save_checkpoint, load_checkpoint, setup_logging, load_config, set_seed, save_config, EarlyStopping
-
-
-def parse_args():
-    """Parse command line arguments."""
-    ap = argparse.ArgumentParser(description='Train junction detection on CityScale dataset')
-
-    # Config file
-    ap.add_argument('--config', type=str, default=None,
-                    help='Path to config JSON file (overrides other args)')
-
-    # Data
-    ap.add_argument('--data_root', type=str, required=False,
-                    help='Path to dataset root directory')
-    ap.add_argument('--img_size', type=int, default=512,
-                    help='Input image size')
-    ap.add_argument('--preload', action='store_true',
-                    help='Preload entire dataset into memory for faster training')
-
-    # Model
-    ap.add_argument('--backbone', type=str, default='resnet50',
-                    choices=['resnet18', 'resnet50'],
-                    help='Backbone architecture')
-    ap.add_argument('--nfeat', type=int, default=256,
-                    help='Number of feature channels')
-
-    # Training
-    ap.add_argument('--epochs', type=int, default=50,
-                    help='Number of training epochs')
-    ap.add_argument('--batch_size', type=int, default=4,
-                    help='Batch size for training')
-    ap.add_argument('--lr', type=float, default=1e-3,
-                    help='Learning rate')
-    ap.add_argument('--weight_decay', type=float, default=1e-4,
-                    help='Weight decay for optimizer')
-
-    # Loss weights
-    ap.add_argument('--loss_weight_junction', type=float, default=1.0,
-                    help='Weight for junction loss')
-    ap.add_argument('--loss_weight_offset', type=float, default=1.0,
-                    help='Weight for offset loss')
-    ap.add_argument('--focal_alpha', type=float, default=0.25,
-                    help='Focal loss alpha parameter')
-    ap.add_argument('--focal_gamma', type=float, default=2.0,
-                    help='Focal loss gamma parameter')
-
-    # Early stopping
-    ap.add_argument('--early_stop_patience', type=int, default=10,
-                    help='Early stopping patience (epochs)')
-    ap.add_argument('--min_delta', type=float, default=1e-4,
-                    help='Minimum change in validation loss for improvement')
-
-    # Checkpointing
-    ap.add_argument('--checkpoint_dir', type=str, default='checkpoints',
-                    help='Directory to save checkpoints')
-    ap.add_argument('--save_freq', type=int, default=5,
-                    help='Save checkpoint every N epochs')
-    ap.add_argument('--resume', type=str, default=None,
-                    help='Path to checkpoint to resume from')
-
-    # Logging
-    ap.add_argument('--log_dir', type=str, default='logs',
-                    help='Directory for logs and tensorboard')
-    ap.add_argument('--experiment_name', type=str, default=None,
-                    help='Experiment name for logging')
-
-    # Weights & Biases
-    ap.add_argument('--wandb_project', type=str, default='openserge_junction',
-                    help='W&B project name (default: openserge_junction)')
-    ap.add_argument('--wandb_entity', type=str, default=None,
-                    help='W&B entity (team) name')
-    ap.add_argument('--wandb_run_name', type=str, default=None,
-                    help='W&B run name (default: auto-generated)')
-    ap.add_argument('--wandb_tags', type=str, nargs='*', default=None,
-                    help='W&B run tags')
-    ap.add_argument('--disable_wandb', action='store_true',
-                    help='Disable W&B logging')
-
-    # System
-    ap.add_argument('--device', type=str, default='cuda',
-                    help='Device to use (cuda/cpu)')
-    ap.add_argument('--num_workers', type=int, default=4,
-                    help='Number of data loading workers')
-    ap.add_argument('--seed', type=int, default=42,
-                    help='Random seed for reproducibility')
-
-    return ap.parse_args()
+from .utils.args import parse_args
 
 
 def compute_losses(outputs, targets, config):

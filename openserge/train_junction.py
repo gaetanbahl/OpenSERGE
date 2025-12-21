@@ -300,14 +300,16 @@ def main():
     logger.info(f"Train samples: {len(train_dataset)}")
     logger.info(f"Valid samples: {len(val_dataset)}")
 
-    # Create dataloaders
+    # Create dataloaders (with persistent workers and prefetching - Bottleneck #5 fix)
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['batch_size'],
         shuffle=True,
         num_workers=config['num_workers'],
         pin_memory=True,
-        collate_fn=collate_fn
+        collate_fn=collate_fn,
+        persistent_workers=True if config['num_workers'] > 0 else False,  # Keep workers alive between epochs
+        prefetch_factor=2 if config['num_workers'] > 0 else None  # Prefetch 2 batches per worker
     )
 
     val_loader = DataLoader(
@@ -316,7 +318,9 @@ def main():
         shuffle=False,
         num_workers=config['num_workers'],
         pin_memory=True,
-        collate_fn=collate_fn
+        collate_fn=collate_fn,
+        persistent_workers=True if config['num_workers'] > 0 else False,  # Keep workers alive between epochs
+        prefetch_factor=2 if config['num_workers'] > 0 else None  # Prefetch 2 batches per worker
     )
 
     # Create model

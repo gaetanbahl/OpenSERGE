@@ -28,7 +28,11 @@ def train_epoch(model, dataloader, optimizer, device, config, writer, epoch):
     pbar = tqdm(dataloader, desc=f'Epoch {epoch}/{config["epochs"]} [Train]')
 
     for batch_idx, batch in enumerate(pbar):
+        # Transfer all data to GPU once (eliminates redundant transfers - Bottleneck #4 fix)
         images = batch['image'].to(device)
+        junction_map = batch['junction_map'].to(device)
+        offset_map = batch['offset_map'].to(device)
+        offset_mask = batch['offset_mask'].to(device)
 
         # Forward pass (run model first to get predicted graph structure)
         out = model(images, j_thr=config['junction_thresh'])
@@ -44,9 +48,9 @@ def train_epoch(model, dataloader, optimizer, device, config, writer, epoch):
         )
 
         targets = {
-            'junction_map': batch['junction_map'].to(device),
-            'offset_map': batch['offset_map'].to(device),
-            'offset_mask': batch['offset_mask'].to(device),
+            'junction_map': junction_map,  # Reuse pre-transferred tensor
+            'offset_map': offset_map,
+            'offset_mask': offset_mask,
             'edge_labels': edge_labels  # Pre-aligned labels!
         }
 
@@ -120,7 +124,11 @@ def validate_epoch(model, dataloader, device, config, writer, epoch):
 
     with torch.no_grad():
         for batch in pbar:
+            # Transfer all data to GPU once (eliminates redundant transfers - Bottleneck #4 fix)
             images = batch['image'].to(device)
+            junction_map = batch['junction_map'].to(device)
+            offset_map = batch['offset_map'].to(device)
+            offset_mask = batch['offset_mask'].to(device)
 
             # Forward pass (run model first to get predicted graph structure)
             out = model(images, j_thr=config['junction_thresh'])
@@ -135,9 +143,9 @@ def validate_epoch(model, dataloader, device, config, writer, epoch):
             )
 
             targets = {
-                'junction_map': batch['junction_map'].to(device),
-                'offset_map': batch['offset_map'].to(device),
-                'offset_mask': batch['offset_mask'].to(device),
+                'junction_map': junction_map,  # Reuse pre-transferred tensor
+                'offset_map': offset_map,
+                'offset_mask': offset_mask,
                 'edge_labels': edge_labels  # Pre-aligned labels!
             }
 
@@ -279,14 +287,16 @@ def main():
     logger.info(f"Train samples: {len(train_dataset)}")
     logger.info(f"Valid samples: {len(val_dataset)}")
 
-    # Create dataloaders
+    # Create dataloaders (with persistent workers and prefetching - Bottleneck #5 fix)
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['batch_size'],
         shuffle=True,
         num_workers=config['num_workers'],
         pin_memory=True,
-        collate_fn=collate_fn
+        collate_fn=collate_fn,
+        persistent_workers=True if config['num_workers'] > 0 else False,  # Keep workers alive between epochs
+        prefetch_factor=2 if config['num_workers'] > 0 else None  # Prefetch 2 batches per worker
     )
 
     val_loader = DataLoader(
@@ -295,7 +305,9 @@ def main():
         shuffle=False,
         num_workers=config['num_workers'],
         pin_memory=True,
-        collate_fn=collate_fn
+        collate_fn=collate_fn,
+        persistent_workers=True if config['num_workers'] > 0 else False,  # Keep workers alive between epochs
+        prefetch_factor=2 if config['num_workers'] > 0 else None  # Prefetch 2 batches per worker
     )
 
     # Create model

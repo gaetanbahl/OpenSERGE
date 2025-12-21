@@ -13,7 +13,7 @@ import wandb
 from .data.dataset import CityScale
 from .models.wrapper import OpenSERGE
 from .models.losses import openserge_losses
-from .utils.graph import collate_fn, create_edge_labels
+from .utils.graph import collate_fn, create_edge_labels_from_model
 from .utils.training import save_checkpoint, load_checkpoint, setup_logging, load_config, set_seed, save_config, EarlyStopping
 from .utils.args import parse_args
 
@@ -30,10 +30,16 @@ def train_epoch(model, dataloader, optimizer, device, config, writer, epoch):
     for batch_idx, batch in enumerate(pbar):
         images = batch['image'].to(device)
 
-        # Create edge labels from ground truth
-        edge_labels = create_edge_labels(
-            batch['junction_map'].to(device),
+        # Forward pass (run model first to get predicted graph structure)
+        out = model(images, j_thr=config['junction_thresh'])
+
+        # Create edge labels aligned with model's predicted graph (OPTIMIZED!)
+        # This eliminates expensive alignment in loss computation
+        edge_labels = create_edge_labels_from_model(
+            out['graphs'],
             batch['edges'],
+            out['cnn']['junction_logits'],
+            stride=out['cnn']['stride'],
             device=device
         )
 
@@ -41,11 +47,9 @@ def train_epoch(model, dataloader, optimizer, device, config, writer, epoch):
             'junction_map': batch['junction_map'].to(device),
             'offset_map': batch['offset_map'].to(device),
             'offset_mask': batch['offset_mask'].to(device),
-            'edge_lists': edge_labels
+            'edge_labels': edge_labels  # Pre-aligned labels!
         }
 
-        # Forward pass
-        out = model(images, j_thr=config['junction_thresh'])
         losses = openserge_losses(out, targets)
 
         # Weighted loss - only include components with non-zero weights
@@ -118,10 +122,15 @@ def validate_epoch(model, dataloader, device, config, writer, epoch):
         for batch in pbar:
             images = batch['image'].to(device)
 
-            # Create edge labels from ground truth
-            edge_labels = create_edge_labels(
-                batch['junction_map'].to(device),
+            # Forward pass (run model first to get predicted graph structure)
+            out = model(images, j_thr=config['junction_thresh'])
+
+            # Create edge labels aligned with model's predicted graph (OPTIMIZED!)
+            edge_labels = create_edge_labels_from_model(
+                out['graphs'],
                 batch['edges'],
+                out['cnn']['junction_logits'],
+                stride=out['cnn']['stride'],
                 device=device
             )
 
@@ -129,11 +138,9 @@ def validate_epoch(model, dataloader, device, config, writer, epoch):
                 'junction_map': batch['junction_map'].to(device),
                 'offset_map': batch['offset_map'].to(device),
                 'offset_mask': batch['offset_mask'].to(device),
-                'edge_lists': edge_labels
+                'edge_labels': edge_labels  # Pre-aligned labels!
             }
 
-            # Forward pass
-            out = model(images, j_thr=config['junction_thresh'])
             losses = openserge_losses(out, targets)
 
             # Weighted loss - only include components with non-zero weights

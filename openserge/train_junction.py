@@ -274,7 +274,12 @@ def main():
         logger.info("W&B logging disabled")
 
     # Setup device
-    device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
+    if config['device'] == "cuda":
+        device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
+    elif config['device'] == "mps":
+        device = torch.device(config['device'] if torch.mps.is_available() else 'cpu')
+    else:
+        device = "cpu"
     logger.info(f"Using device: {device}")
 
     # Create datasets with skip_edges=True for faster training

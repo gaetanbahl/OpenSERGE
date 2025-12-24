@@ -35,11 +35,11 @@ class OpenSERGE(nn.Module):
                 vals = j_prob[idx[:,0], idx[:,1]]
                 topk = torch.topk(vals, max_nodes).indices
                 idx = idx[topk]
-            u_off = offs[b,0][idx[:,0], idx[:,1]]
-            v_off = offs[b,1][idx[:,0], idx[:,1]]
+            y_off = offs[b,0][idx[:,0], idx[:,1]]  # Channel 0 = y-offset
+            x_off = offs[b,1][idx[:,0], idx[:,1]]  # Channel 1 = x-offset
             # Map to image coords
-            x = (idx[:,1].float() + 0.5 + u_off) * stride
-            y = (idx[:,0].float() + 0.5 + v_off) * stride
+            x = (idx[:,1].float() + 0.5 + x_off) * stride
+            y = (idx[:,0].float() + 0.5 + y_off) * stride
             nodes_xy = torch.stack([x, y], dim=-1)  # [N,2]
 
             # Node features from nmap at cell locations

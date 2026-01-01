@@ -9,6 +9,9 @@ def parse_args():
                     help='Path to config JSON file (overrides other args)')
 
     # Data
+    ap.add_argument('--dataset', type=str, default='cityscale',
+                    choices=['cityscale', 'globalscale'],
+                    help='Dataset type: cityscale (Sat2Graph) or globalscale (Global-Scale Road Dataset)')
     ap.add_argument('--data_root', type=str, required=False,
                     help='Path to dataset root directory')
     ap.add_argument('--img_size', type=int, default=512,

@@ -16,7 +16,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import wandb
 
-from .data.dataset import CityScale
+from .data.dataset import CityScale, GlobalScale
 from .models.net import SingleShotRoadGraphNet
 from .models.losses import sigmoid_focal_loss, masked_mse
 from .utils.graph import collate_fn
@@ -285,7 +285,14 @@ def main():
     # Create datasets with skip_edges=True for faster training
     logger.info("Loading datasets...")
     preload = config.get('preload', False)
-    train_dataset = CityScale(
+    dataset_type = config.get('dataset', 'cityscale')
+
+    if dataset_type == 'globalscale':
+        DatasetClass = GlobalScale
+    else:
+        DatasetClass = CityScale
+
+    train_dataset = DatasetClass(
         config['data_root'],
         split='train',
         img_size=config['img_size'],
@@ -293,7 +300,7 @@ def main():
         preload=preload,
         skip_edges=True  # Skip edge computation for junction-only training
     )
-    val_dataset = CityScale(
+    val_dataset = DatasetClass(
         config['data_root'],
         split='valid',
         img_size=config['img_size'],

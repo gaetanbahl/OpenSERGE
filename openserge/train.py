@@ -10,7 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import wandb
 
-from .data.dataset import CityScale
+from .data.dataset import CityScale, GlobalScale
 from .models.wrapper import OpenSERGE
 from .models.losses import openserge_losses
 from .utils.graph import collate_fn, create_edge_labels_from_model
@@ -284,10 +284,17 @@ def main():
     # Create datasets
     logger.info("Loading datasets...")
     preload = config.get('preload', False)
-    train_dataset = CityScale(config['data_root'], split='train',
-                             img_size=config['img_size'], aug=True, preload=preload)
-    val_dataset = CityScale(config['data_root'], split='valid',
-                           img_size=config['img_size'], aug=False, preload=preload)
+    dataset_type = config.get('dataset', 'cityscale')
+
+    if dataset_type == 'globalscale':
+        DatasetClass = GlobalScale
+    else:
+        DatasetClass = CityScale
+
+    train_dataset = DatasetClass(config['data_root'], split='train',
+                                 img_size=config['img_size'], aug=True, preload=preload)
+    val_dataset = DatasetClass(config['data_root'], split='valid',
+                               img_size=config['img_size'], aug=False, preload=preload)
 
     logger.info(f"Train samples: {len(train_dataset)}")
     logger.info(f"Valid samples: {len(val_dataset)}")

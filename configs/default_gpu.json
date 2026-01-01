@@ -1,5 +1,6 @@
 {
   "experiment_name": "openserge_baseline",
+  "dataset": "cityscale",
   "data_root": "../data/",
   "img_size": 512,
   "preload": true,

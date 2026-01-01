@@ -1,6 +1,15 @@
+"""
+Three-stage training script for OpenSERGE.
+
+Training pipeline:
+  Stage 1: Junction detection (CNN only) - trains backbone for junction/offset prediction
+  Stage 2: GNN training (frozen CNN) - trains GNN for edge prediction with fixed CNN
+  Stage 3: Full model fine-tuning - end-to-end training with reduced learning rate
+"""
 import time
 import json
 import logging
+import shutil
 from pathlib import Path
 from datetime import datetime
 
@@ -14,31 +23,30 @@ from .data.dataset import CityScale, GlobalScale
 from .models.wrapper import OpenSERGE
 from .models.losses import openserge_losses
 from .utils.graph import collate_fn, create_edge_labels_from_model
-from .utils.training import save_checkpoint, load_checkpoint, setup_logging, load_config, set_seed, save_config, EarlyStopping
+from .utils.training import save_checkpoint, setup_logging, load_config, set_seed, save_config, EarlyStopping
 from .utils.args import parse_args
 
 
-def train_epoch(model, dataloader, optimizer, device, config, writer, epoch):
+def train_epoch(model, dataloader, optimizer, device, config, writer, epoch, stage_num, global_step_offset=0):
     """Train for one epoch."""
     model.train()
 
     epoch_losses = {'total': 0, 'junction': 0, 'offset': 0, 'edge': 0}
     num_batches = 0
 
-    pbar = tqdm(dataloader, desc=f'Epoch {epoch}/{config["epochs"]} [Train]')
+    pbar = tqdm(dataloader, desc=f'Stage {stage_num} - Epoch {epoch} [Train]')
 
     for batch_idx, batch in enumerate(pbar):
-        # Transfer all data to GPU once (eliminates redundant transfers - Bottleneck #4 fix)
+        # Transfer all data to GPU once
         images = batch['image'].to(device)
         junction_map = batch['junction_map'].to(device)
         offset_map = batch['offset_map'].to(device)
         offset_mask = batch['offset_mask'].to(device)
 
-        # Forward pass (run model first to get predicted graph structure)
+        # Forward pass
         out = model(images, j_thr=config['junction_thresh'])
 
-        # Create edge labels aligned with model's predicted graph (OPTIMIZED!)
-        # This eliminates expensive alignment in loss computation
+        # Create edge labels aligned with model's predicted graph
         edge_labels = create_edge_labels_from_model(
             out['graphs'],
             batch['edges'],
@@ -48,15 +56,15 @@ def train_epoch(model, dataloader, optimizer, device, config, writer, epoch):
         )
 
         targets = {
-            'junction_map': junction_map,  # Reuse pre-transferred tensor
+            'junction_map': junction_map,
             'offset_map': offset_map,
             'offset_mask': offset_mask,
-            'edge_labels': edge_labels  # Pre-aligned labels!
+            'edge_labels': edge_labels
         }
 
         losses = openserge_losses(out, targets)
 
-        # Weighted loss - only include components with non-zero weights
+        # Weighted loss
         loss = torch.tensor(0.0, device=device, requires_grad=True)
         if config['loss_weight_junction'] > 0:
             loss = loss + config['loss_weight_junction'] * losses['L_junction']
@@ -87,23 +95,20 @@ def train_epoch(model, dataloader, optimizer, device, config, writer, epoch):
 
         # Log to tensorboard and W&B (every 10 batches)
         if batch_idx % 10 == 0:
-            global_step = (epoch - 1) * len(dataloader) + batch_idx
+            global_step = global_step_offset + (epoch - 1) * len(dataloader) + batch_idx
 
-            # TensorBoard logging
             if writer:
-                writer.add_scalar('Train/Loss_Total', loss.item(), global_step)
-                writer.add_scalar('Train/Loss_Junction', losses['L_junction'].item(), global_step)
-                writer.add_scalar('Train/Loss_Offset', losses['L_offset'].item(), global_step)
-                writer.add_scalar('Train/Loss_Edge', losses['L_edge'].item(), global_step)
+                writer.add_scalar(f'Stage{stage_num}/Train/Loss_Total', loss.item(), global_step)
+                writer.add_scalar(f'Stage{stage_num}/Train/Loss_Junction', losses['L_junction'].item(), global_step)
+                writer.add_scalar(f'Stage{stage_num}/Train/Loss_Offset', losses['L_offset'].item(), global_step)
+                writer.add_scalar(f'Stage{stage_num}/Train/Loss_Edge', losses['L_edge'].item(), global_step)
 
-            # W&B logging
             if not config.get('disable_wandb', False):
                 wandb.log({
-                    'train/loss_total': loss.item(),
-                    'train/loss_junction': losses['L_junction'].item(),
-                    'train/loss_offset': losses['L_offset'].item(),
-                    'train/loss_edge': losses['L_edge'].item(),
-                    'train/epoch': epoch,
+                    f'stage{stage_num}/train/loss_total': loss.item(),
+                    f'stage{stage_num}/train/loss_junction': losses['L_junction'].item(),
+                    f'stage{stage_num}/train/loss_offset': losses['L_offset'].item(),
+                    f'stage{stage_num}/train/loss_edge': losses['L_edge'].item(),
                 }, step=global_step)
 
     # Average losses
@@ -113,27 +118,24 @@ def train_epoch(model, dataloader, optimizer, device, config, writer, epoch):
     return epoch_losses
 
 
-def validate_epoch(model, dataloader, device, config, writer, epoch):
+def validate_epoch(model, dataloader, device, config, writer, epoch, stage_num):
     """Validate for one epoch."""
     model.eval()
 
     epoch_losses = {'total': 0, 'junction': 0, 'offset': 0, 'edge': 0}
     num_batches = 0
 
-    pbar = tqdm(dataloader, desc=f'Epoch {epoch}/{config["epochs"]} [Valid]')
+    pbar = tqdm(dataloader, desc=f'Stage {stage_num} - Epoch {epoch} [Valid]')
 
     with torch.no_grad():
         for batch in pbar:
-            # Transfer all data to GPU once (eliminates redundant transfers - Bottleneck #4 fix)
             images = batch['image'].to(device)
             junction_map = batch['junction_map'].to(device)
             offset_map = batch['offset_map'].to(device)
             offset_mask = batch['offset_mask'].to(device)
 
-            # Forward pass (run model first to get predicted graph structure)
             out = model(images, j_thr=config['junction_thresh'])
 
-            # Create edge labels aligned with model's predicted graph (OPTIMIZED!)
             edge_labels = create_edge_labels_from_model(
                 out['graphs'],
                 batch['edges'],
@@ -143,15 +145,15 @@ def validate_epoch(model, dataloader, device, config, writer, epoch):
             )
 
             targets = {
-                'junction_map': junction_map,  # Reuse pre-transferred tensor
+                'junction_map': junction_map,
                 'offset_map': offset_map,
                 'offset_mask': offset_mask,
-                'edge_labels': edge_labels  # Pre-aligned labels!
+                'edge_labels': edge_labels
             }
 
             losses = openserge_losses(out, targets)
 
-            # Weighted loss - only include components with non-zero weights
+            # Weighted loss
             loss = torch.tensor(0.0, device=device, requires_grad=False)
             if config['loss_weight_junction'] > 0:
                 loss = loss + config['loss_weight_junction'] * losses['L_junction']
@@ -167,40 +169,130 @@ def validate_epoch(model, dataloader, device, config, writer, epoch):
             epoch_losses['edge'] += losses['L_edge'].item()
             num_batches += 1
 
-            # Update progress bar
-            pbar.set_postfix({
-                'L_j': f"{losses['L_junction'].item():.4f}",
-                'L_o': f"{losses['L_offset'].item():.4f}",
-                'L_e': f"{losses['L_edge'].item():.4f}",
-                'L_tot': f"{loss.item():.4f}"
-            })
-
     # Average losses
     for key in epoch_losses:
         epoch_losses[key] /= num_batches
 
     # Log to tensorboard
     if writer:
-        writer.add_scalar('Valid/Loss_Total', epoch_losses['total'], epoch)
-        writer.add_scalar('Valid/Loss_Junction', epoch_losses['junction'], epoch)
-        writer.add_scalar('Valid/Loss_Offset', epoch_losses['offset'], epoch)
-        writer.add_scalar('Valid/Loss_Edge', epoch_losses['edge'], epoch)
+        writer.add_scalar(f'Stage{stage_num}/Valid/Loss_Total', epoch_losses['total'], epoch)
+        writer.add_scalar(f'Stage{stage_num}/Valid/Loss_Junction', epoch_losses['junction'], epoch)
+        writer.add_scalar(f'Stage{stage_num}/Valid/Loss_Offset', epoch_losses['offset'], epoch)
+        writer.add_scalar(f'Stage{stage_num}/Valid/Loss_Edge', epoch_losses['edge'], epoch)
 
     # Log to W&B
     if not config.get('disable_wandb', False):
         wandb.log({
-            'val/loss_total': epoch_losses['total'],
-            'val/loss_junction': epoch_losses['junction'],
-            'val/loss_offset': epoch_losses['offset'],
-            'val/loss_edge': epoch_losses['edge'],
-            'epoch': epoch,
-        })  # No step parameter - let wandb auto-increment
+            f'stage{stage_num}/val/loss_total': epoch_losses['total'],
+            f'stage{stage_num}/val/loss_junction': epoch_losses['junction'],
+            f'stage{stage_num}/val/loss_offset': epoch_losses['offset'],
+            f'stage{stage_num}/val/loss_edge': epoch_losses['edge'],
+        })
 
     return epoch_losses
 
 
+def train_stage(stage_num, model, train_loader, val_loader, optimizer, device, config,
+                writer, logger, checkpoint_dir, max_epochs, patience, global_step_offset=0):
+    """Train a single stage of the multi-stage training pipeline."""
+    early_stopping = EarlyStopping(
+        patience=patience,
+        min_delta=config.get('min_delta', 1e-4),
+        mode='min'
+    )
+
+    best_val_loss = float('inf')
+    train_history = {'train': [], 'val': []}
+
+    logger.info(f"=" * 70)
+    logger.info(f"STAGE {stage_num} TRAINING")
+    logger.info(f"Max epochs: {max_epochs}, Patience: {patience}")
+    logger.info(f"=" * 70)
+
+    for epoch in range(1, max_epochs + 1):
+        epoch_start_time = time.time()
+
+        # Train
+        train_losses = train_epoch(model, train_loader, optimizer, device,
+                                   config, writer, epoch, stage_num, global_step_offset)
+
+        # Validate
+        val_losses = validate_epoch(model, val_loader, device,
+                                   config, writer, epoch, stage_num)
+
+        epoch_time = time.time() - epoch_start_time
+
+        # Log epoch summary
+        logger.info(
+            f"Stage {stage_num} - Epoch {epoch}/{max_epochs} ({epoch_time:.1f}s) - "
+            f"Train Loss: {train_losses['total']:.4f} "
+            f"(J={train_losses['junction']:.4f}, "
+            f"O={train_losses['offset']:.4f}, "
+            f"E={train_losses['edge']:.4f}) | "
+            f"Val Loss: {val_losses['total']:.4f} "
+            f"(J={val_losses['junction']:.4f}, "
+            f"O={val_losses['offset']:.4f}, "
+            f"E={val_losses['edge']:.4f})"
+        )
+
+        # Save history
+        train_history['train'].append(train_losses)
+        train_history['val'].append(val_losses)
+
+        # Check if best model
+        is_best = val_losses['total'] < best_val_loss
+        if is_best:
+            best_val_loss = val_losses['total']
+            logger.info(f"Stage {stage_num} - New best validation loss: {best_val_loss:.4f}")
+
+            if not config.get('disable_wandb', False):
+                wandb.log({f'stage{stage_num}/best_val_loss': best_val_loss})
+
+        # Save checkpoint
+        if epoch % config.get('save_freq', 5) == 0 or is_best:
+            save_path = checkpoint_dir / f'stage{stage_num}_epoch{epoch}.pt'
+            save_checkpoint(model, optimizer, epoch, config, save_path,
+                          is_best, train_losses, val_losses)
+            logger.info(f"Saved checkpoint: {save_path}")
+
+            if not config.get('disable_wandb', False) and is_best:
+                best_artifact = wandb.Artifact(
+                    name=f'stage{stage_num}_best_model',
+                    type='model',
+                    description=f"Best model for stage {stage_num} (val_loss={best_val_loss:.4f})"
+                )
+                best_model_path = checkpoint_dir / f'stage{stage_num}_best.pt'
+                if best_model_path.exists():
+                    best_artifact.add_file(str(best_model_path))
+                    wandb.log_artifact(best_artifact)
+
+        # Early stopping check
+        if early_stopping(val_losses['total']):
+            logger.info(f"Stage {stage_num} - Early stopping triggered at epoch {epoch}")
+            break
+
+        # Log learning rate
+        current_lr = optimizer.param_groups[0]['lr']
+        if writer:
+            writer.add_scalar(f'Stage{stage_num}/LearningRate', current_lr, epoch)
+        if not config.get('disable_wandb', False):
+            wandb.log({f'stage{stage_num}/learning_rate': current_lr})
+
+    logger.info(f"Stage {stage_num} completed! Best validation loss: {best_val_loss:.4f}")
+
+    # Save stage training history
+    history_path = checkpoint_dir.parent / f'stage{stage_num}_training_history.json'
+    with open(history_path, 'w') as f:
+        json.dump(train_history, f, indent=2)
+
+    # Calculate final global step for this stage
+    final_global_step = global_step_offset + epoch * len(train_loader)
+
+    return best_val_loss, final_global_step
+
+
 def main():
-    """Main training function."""
+    """Main training function - always uses three-stage training."""
     args = parse_args()
 
     # Load config from file if provided
@@ -229,30 +321,42 @@ def main():
     # Save config
     save_config(config, exp_dir / 'config.json')
 
+    logger.info("="*70)
+    logger.info("THREE-STAGE TRAINING PIPELINE")
+    logger.info("="*70)
+    logger.info(f"Stage 1 (Junction): max {config.get('stage1_epochs', 1000)} epochs, patience {config.get('stage1_patience', 100)}")
+    logger.info(f"Stage 2 (GNN): max {config.get('stage2_epochs', 1000)} epochs, patience {config.get('stage2_patience', 100)}")
+    logger.info(f"Stage 3 (Full): max {config.get('stage3_epochs', 2000)} epochs, patience {config.get('stage3_patience', 200)}, LR factor {config.get('stage3_lr_factor', 0.3)}")
+    logger.info("="*70)
+
     # Setup tensorboard
     writer = SummaryWriter(exp_dir / 'tensorboard')
 
-    # Setup Weights & Biases
+    # Setup Weights & Biases with safe config extraction
     if not config.get('disable_wandb', False):
         wandb_config = {
+            'dataset': config.get('dataset', 'cityscale'),
             'data_root': config.get('data_root', 'N/A'),
-            'img_size': config['img_size'],
+            'img_size': config.get('img_size', 512),
             'backbone': config.get('backbone', 'resnet50'),
-            'k': config.get('k', 'None'),
-            'pretrained_cnn': config.get('pretrained_cnn', 'None'),
-            'freeze_pretrained_cnn': config.get('freeze_pretrained_cnn', False),
-            'epochs': config['epochs'],
-            'batch_size': config['batch_size'],
-            'lr': config['lr'],
-            'weight_decay': config.get('weight_decay', 1e-4),
+            'k': config.get('k'),
+            'batch_size': config.get('batch_size', 8),
+            'lr': config.get('lr', 0.001),
+            'weight_decay': config.get('weight_decay', 0.0001),
             'junction_thresh': config.get('junction_thresh', 0.5),
             'loss_weight_junction': config.get('loss_weight_junction', 1.0),
-            'loss_weight_offset': config.get('loss_weight_offset', 1.0),
+            'loss_weight_offset': config.get('loss_weight_offset', 10.0),
             'loss_weight_edge': config.get('loss_weight_edge', 1.0),
-            'early_stop_patience': config.get('early_stop_patience', 10),
-            'min_delta': config.get('min_delta', 1e-4),
-            'seed': config['seed'],
+            'min_delta': config.get('min_delta', 0.0001),
+            'seed': config.get('seed', 42),
             'preload': config.get('preload', False),
+            'stage1_epochs': config.get('stage1_epochs', 1000),
+            'stage1_patience': config.get('stage1_patience', 100),
+            'stage2_epochs': config.get('stage2_epochs', 1000),
+            'stage2_patience': config.get('stage2_patience', 100),
+            'stage3_epochs': config.get('stage3_epochs', 2000),
+            'stage3_patience': config.get('stage3_patience', 200),
+            'stage3_lr_factor': config.get('stage3_lr_factor', 0.3),
         }
 
         wandb.init(
@@ -264,277 +368,248 @@ def main():
             dir=str(exp_dir)
         )
 
-        # Watch model gradients and parameters
-        # wandb.watch(model) will be called after model is created
-
         logger.info(f"W&B project: {config.get('wandb_project', 'openserge')}")
         logger.info(f"W&B run: {wandb.run.name if wandb.run else 'N/A'}")
     else:
         logger.info("W&B logging disabled")
 
     # Setup device
-    if config['device'] == "cuda":
-        device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
-    elif config['device'] == "mps":
-        device = torch.device(config['device'] if torch.mps.is_available() else 'cpu')
+    if config.get('device') == "cuda":
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    elif config.get('device') == "mps":
+        device = torch.device('mps' if torch.mps.is_available() else 'cpu')
     else:
-        device = "cpu"
+        device = torch.device('cpu')
     logger.info(f"Using device: {device}")
 
-    # Create datasets
-    logger.info("Loading datasets...")
-    preload = config.get('preload', False)
+    # Dataset selection
     dataset_type = config.get('dataset', 'cityscale')
-
-    if dataset_type == 'globalscale':
-        DatasetClass = GlobalScale
-    else:
-        DatasetClass = CityScale
-
-    train_dataset = DatasetClass(config['data_root'], split='train',
-                                 img_size=config['img_size'], aug=True, preload=preload)
-    val_dataset = DatasetClass(config['data_root'], split='valid',
-                               img_size=config['img_size'], aug=False, preload=preload)
-
-    logger.info(f"Train samples: {len(train_dataset)}")
-    logger.info(f"Valid samples: {len(val_dataset)}")
-
-    # Create dataloaders (with persistent workers and prefetching - Bottleneck #5 fix)
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config['batch_size'],
-        shuffle=True,
-        num_workers=config['num_workers'],
-        pin_memory=True,
-        collate_fn=collate_fn,
-        persistent_workers=True if config['num_workers'] > 0 else False,  # Keep workers alive between epochs
-        prefetch_factor=2 if config['num_workers'] > 0 else None  # Prefetch 2 batches per worker
-    )
-
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config['batch_size'],
-        shuffle=False,
-        num_workers=config['num_workers'],
-        pin_memory=True,
-        collate_fn=collate_fn,
-        persistent_workers=True if config['num_workers'] > 0 else False,  # Keep workers alive between epochs
-        prefetch_factor=2 if config['num_workers'] > 0 else None  # Prefetch 2 batches per worker
-    )
+    preload = config.get('preload', False)
+    DatasetClass = GlobalScale if dataset_type == 'globalscale' else CityScale
 
     # Create model
     logger.info("Creating model...")
-    model = OpenSERGE(backbone=config['backbone'], k=config.get('k')).to(device)
+    model = OpenSERGE(backbone=config.get('backbone', 'resnet50'), k=config.get('k')).to(device)
 
-    # Load pre-trained CNN weights if specified
-    if config.get('pretrained_cnn'):
-        logger.info(f"Loading pre-trained CNN from: {config['pretrained_cnn']}")
-        pretrained_checkpoint = torch.load(config['pretrained_cnn'], map_location=device)
-
-        # Extract SingleShotRoadGraphNet state dict
-        if 'model_state_dict' in pretrained_checkpoint:
-            # It's a full training checkpoint
-            full_state_dict = pretrained_checkpoint['model_state_dict']
-            # Filter keys that belong to SingleShotRoadGraphNet (keys starting with 'ss.')
-            cnn_state_dict = {k[3:]: v for k, v in full_state_dict.items() if k.startswith('ss.')}
-
-            if len(cnn_state_dict) == 0:
-                logger.warning("No 'ss.' prefix found in checkpoint. Attempting direct load...")
-                cnn_state_dict = full_state_dict
-        else:
-            # It's a direct state dict
-            cnn_state_dict = pretrained_checkpoint
-
-        # Load into the CNN component
-        missing_keys, unexpected_keys = model.ss.load_state_dict(cnn_state_dict, strict=False)
-
-        if missing_keys:
-            logger.warning(f"Missing keys in pre-trained CNN: {missing_keys}")
-        if unexpected_keys:
-            logger.warning(f"Unexpected keys in pre-trained CNN: {unexpected_keys}")
-
-        logger.info("Pre-trained CNN weights loaded successfully!")
-
-        # Optionally freeze CNN weights
-        if config.get('freeze_pretrained_cnn', False):
-            logger.info("Freezing pre-trained CNN weights...")
-            for param in model.ss.parameters():
-                param.requires_grad = False
-            logger.info("CNN weights frozen. Only GNN will be trained.")
-
-            # When CNN is frozen, junction and offset losses don't contribute gradients
-            # Automatically set their weights to 0 to avoid gradient computation issues
-            if config.get('loss_weight_junction', 1.0) > 0 or config.get('loss_weight_offset', 1.0) > 0:
-                logger.warning("CNN is frozen but junction/offset loss weights are > 0.")
-                logger.warning("Setting junction_weight=0 and offset_weight=0 to avoid gradient errors.")
-                logger.warning("Only edge loss will be used for training the GNN.")
-                config['loss_weight_junction'] = 0.0
-                config['loss_weight_offset'] = 0.0
-
-    # Count parameters
     num_params = sum(p.numel() for p in model.parameters())
     num_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Model parameters: {num_params:,} (trainable: {num_trainable:,})")
 
-    # Verify we have trainable parameters
-    if num_trainable == 0:
-        raise ValueError("No trainable parameters! Check your freeze settings.")
-
-    # Watch model with W&B
     if not config.get('disable_wandb', False):
         wandb.watch(model, log='all', log_freq=100)
 
-    # Create optimizer (only for trainable parameters)
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.Adam(
-        trainable_params,
-        lr=config['lr'],
-        weight_decay=config.get('weight_decay', 1e-4)
+    # =========================================================================
+    # STAGE 1: Junction Detection (CNN only)
+    # =========================================================================
+    logger.info("\n" + "="*70)
+    logger.info("STAGE 1: Training Junction Detection (CNN only)")
+    logger.info("="*70)
+
+    # Create datasets for stage 1 (skip edges for faster training)
+    logger.info("Loading datasets (skip_edges=True)...")
+    train_dataset_s1 = DatasetClass(config['data_root'], split='train',
+                                    img_size=config.get('img_size', 512), aug=True,
+                                    preload=preload, skip_edges=True)
+    val_dataset_s1 = DatasetClass(config['data_root'], split='valid',
+                                  img_size=config.get('img_size', 512), aug=False,
+                                  preload=preload, skip_edges=True)
+
+    train_loader_s1 = DataLoader(
+        train_dataset_s1, batch_size=config.get('batch_size', 8), shuffle=True,
+        num_workers=config.get('num_workers', 4), pin_memory=True, collate_fn=collate_fn,
+        persistent_workers=True if config.get('num_workers', 4) > 0 else False,
+        prefetch_factor=2 if config.get('num_workers', 4) > 0 else None
     )
-    logger.info(f"Optimizer created with {len(trainable_params)} parameter groups")
-
-    # Resume from checkpoint if specified
-    start_epoch = 1
-    best_val_loss = float('inf')
-    if config.get('resume'):
-        logger.info(f"Resuming from checkpoint: {config['resume']}")
-        start_epoch, _, _, val_losses = load_checkpoint(config['resume'], model, optimizer)
-        start_epoch += 1
-        if val_losses:
-            best_val_loss = val_losses['total']
-
-    # Setup early stopping
-    early_stopping = EarlyStopping(
-        patience=config['early_stop_patience'],
-        min_delta=config['min_delta'],
-        mode='min'
+    val_loader_s1 = DataLoader(
+        val_dataset_s1, batch_size=config.get('batch_size', 8), shuffle=False,
+        num_workers=config.get('num_workers', 4), pin_memory=True, collate_fn=collate_fn,
+        persistent_workers=True if config.get('num_workers', 4) > 0 else False,
+        prefetch_factor=2 if config.get('num_workers', 4) > 0 else None
     )
 
-    # Training loop
-    logger.info("Starting training...")
-    train_history = {'train': [], 'val': []}
+    logger.info(f"Train samples: {len(train_dataset_s1)}")
+    logger.info(f"Valid samples: {len(val_dataset_s1)}")
 
-    for epoch in range(start_epoch, config['epochs'] + 1):
-        epoch_start_time = time.time()
+    # Configure loss weights for stage 1 (junction + offset only)
+    stage1_config = config.copy()
+    stage1_config['loss_weight_junction'] = config.get('loss_weight_junction', 1.0)
+    stage1_config['loss_weight_offset'] = config.get('loss_weight_offset', 10.0)
+    stage1_config['loss_weight_edge'] = 0.0
 
-        # Train
-        train_losses = train_epoch(model, train_loader, optimizer, device,
-                                   config, writer, epoch)
+    optimizer_s1 = torch.optim.Adam(
+        model.parameters(),
+        lr=config.get('lr', 0.001),
+        weight_decay=config.get('weight_decay', 0.0001)
+    )
 
-        # Validate
-        val_losses = validate_epoch(model, val_loader, device,
-                                   config, writer, epoch)
+    best_val_loss_s1, global_step_s1 = train_stage(
+        stage_num=1,
+        model=model,
+        train_loader=train_loader_s1,
+        val_loader=val_loader_s1,
+        optimizer=optimizer_s1,
+        device=device,
+        config=stage1_config,
+        writer=writer,
+        logger=logger,
+        checkpoint_dir=checkpoint_dir,
+        max_epochs=config.get('stage1_epochs', 1000),
+        patience=config.get('stage1_patience', 100),
+        global_step_offset=0
+    )
 
-        epoch_time = time.time() - epoch_start_time
+    # =========================================================================
+    # STAGE 2: GNN Training (CNN frozen)
+    # =========================================================================
+    logger.info("\n" + "="*70)
+    logger.info("STAGE 2: Training GNN (CNN frozen)")
+    logger.info("="*70)
 
-        # Log epoch summary
-        logger.info(
-            f"Epoch {epoch}/{config['epochs']} ({epoch_time:.1f}s) - "
-            f"Train Loss: {train_losses['total']:.4f} "
-            f"(J={train_losses['junction']:.4f}, "
-            f"O={train_losses['offset']:.4f}, "
-            f"E={train_losses['edge']:.4f}) | "
-            f"Val Loss: {val_losses['total']:.4f} "
-            f"(J={val_losses['junction']:.4f}, "
-            f"O={val_losses['offset']:.4f}, "
-            f"E={val_losses['edge']:.4f})"
-        )
+    # Freeze CNN weights
+    logger.info("Freezing CNN weights...")
+    for param in model.ss.parameters():
+        param.requires_grad = False
+    num_trainable_s2 = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"Trainable parameters in stage 2: {num_trainable_s2:,}")
 
-        # Save history
-        train_history['train'].append(train_losses)
-        train_history['val'].append(val_losses)
+    # Create datasets for stage 2 (with edges)
+    logger.info("Loading datasets (with edges)...")
+    train_dataset_s2 = DatasetClass(config['data_root'], split='train',
+                                    img_size=config.get('img_size', 512), aug=True,
+                                    preload=preload, skip_edges=False)
+    val_dataset_s2 = DatasetClass(config['data_root'], split='valid',
+                                  img_size=config.get('img_size', 512), aug=False,
+                                  preload=preload, skip_edges=False)
 
-        # Check if best model
-        is_best = val_losses['total'] < best_val_loss
-        if is_best:
-            best_val_loss = val_losses['total']
-            logger.info(f"New best validation loss: {best_val_loss:.4f}")
+    train_loader_s2 = DataLoader(
+        train_dataset_s2, batch_size=config.get('batch_size', 8), shuffle=True,
+        num_workers=config.get('num_workers', 4), pin_memory=True, collate_fn=collate_fn,
+        persistent_workers=True if config.get('num_workers', 4) > 0 else False,
+        prefetch_factor=2 if config.get('num_workers', 4) > 0 else None
+    )
+    val_loader_s2 = DataLoader(
+        val_dataset_s2, batch_size=config.get('batch_size', 8), shuffle=False,
+        num_workers=config.get('num_workers', 4), pin_memory=True, collate_fn=collate_fn,
+        persistent_workers=True if config.get('num_workers', 4) > 0 else False,
+        prefetch_factor=2 if config.get('num_workers', 4) > 0 else None
+    )
 
-            # Log best validation loss to W&B
-            if not config.get('disable_wandb', False):
-                wandb.log({'val/best_loss': best_val_loss})
+    # Configure loss weights for stage 2 (edge only)
+    stage2_config = config.copy()
+    stage2_config['loss_weight_junction'] = 0.0
+    stage2_config['loss_weight_offset'] = 0.0
+    stage2_config['loss_weight_edge'] = config.get('loss_weight_edge', 1.0)
 
-        # Save checkpoint
-        if epoch % config['save_freq'] == 0 or is_best:
-            save_path = checkpoint_dir / f'checkpoint_epoch{epoch}.pt'
-            save_checkpoint(model, optimizer, epoch, config, save_path,
-                          is_best, train_losses, val_losses)
-            logger.info(f"Saved checkpoint: {save_path}")
+    trainable_params_s2 = [p for p in model.parameters() if p.requires_grad]
+    optimizer_s2 = torch.optim.Adam(
+        trainable_params_s2,
+        lr=config.get('lr', 0.001),
+        weight_decay=config.get('weight_decay', 0.0001)
+    )
 
-            # Log checkpoint to W&B
-            if not config.get('disable_wandb', False):
-                artifact = wandb.Artifact(
-                    name=f"checkpoint_epoch{epoch}",
-                    type='model',
-                    description=f"Model checkpoint at epoch {epoch}"
-                )
-                artifact.add_file(str(save_path))
-                wandb.log_artifact(artifact)
+    best_val_loss_s2, global_step_s2 = train_stage(
+        stage_num=2,
+        model=model,
+        train_loader=train_loader_s2,
+        val_loader=val_loader_s2,
+        optimizer=optimizer_s2,
+        device=device,
+        config=stage2_config,
+        writer=writer,
+        logger=logger,
+        checkpoint_dir=checkpoint_dir,
+        max_epochs=config.get('stage2_epochs', 1000),
+        patience=config.get('stage2_patience', 100),
+        global_step_offset=global_step_s1
+    )
 
-                # Log best model separately
-                if is_best:
-                    best_model_path = checkpoint_dir / 'best_model.pt'
-                    if best_model_path.exists():
-                        best_artifact = wandb.Artifact(
-                            name='best_model',
-                            type='model',
-                            description=f"Best model (epoch {epoch}, val_loss={best_val_loss:.4f})"
-                        )
-                        best_artifact.add_file(str(best_model_path))
-                        wandb.log_artifact(best_artifact)
+    # =========================================================================
+    # STAGE 3: Full Model Fine-tuning (reduced LR)
+    # =========================================================================
+    logger.info("\n" + "="*70)
+    logger.info("STAGE 3: Fine-tuning Full Model (all parameters)")
+    logger.info("="*70)
 
-        # Early stopping check
-        if early_stopping(val_losses['total']):
-            logger.info(f"Early stopping triggered at epoch {epoch}")
-            break
+    # Unfreeze all parameters
+    logger.info("Unfreezing all parameters...")
+    for param in model.parameters():
+        param.requires_grad = True
+    num_trainable_s3 = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"Trainable parameters in stage 3: {num_trainable_s3:,}")
 
-        # Log learning rate
-        current_lr = optimizer.param_groups[0]['lr']
-        if writer:
-            writer.add_scalar('Train/LearningRate', current_lr, epoch)
-        if not config.get('disable_wandb', False):
-            wandb.log({'train/learning_rate': current_lr})
+    # Configure loss weights for stage 3 (all losses)
+    stage3_config = config.copy()
+    stage3_config['loss_weight_junction'] = config.get('loss_weight_junction', 1.0)
+    stage3_config['loss_weight_offset'] = config.get('loss_weight_offset', 10.0)
+    stage3_config['loss_weight_edge'] = config.get('loss_weight_edge', 1.0)
 
-    # Save final checkpoint
+    # Reduced learning rate for stage 3
+    stage3_lr = config.get('lr', 0.001) * config.get('stage3_lr_factor', 0.3)
+    logger.info(f"Using reduced learning rate: {stage3_lr} (factor: {config.get('stage3_lr_factor', 0.3)})")
+
+    optimizer_s3 = torch.optim.Adam(
+        model.parameters(),
+        lr=stage3_lr,
+        weight_decay=config.get('weight_decay', 0.0001)
+    )
+
+    best_val_loss_s3, global_step_s3 = train_stage(
+        stage_num=3,
+        model=model,
+        train_loader=train_loader_s2,  # Reuse stage 2 loaders
+        val_loader=val_loader_s2,
+        optimizer=optimizer_s3,
+        device=device,
+        config=stage3_config,
+        writer=writer,
+        logger=logger,
+        checkpoint_dir=checkpoint_dir,
+        max_epochs=config.get('stage3_epochs', 2000),
+        patience=config.get('stage3_patience', 200),
+        global_step_offset=global_step_s2
+    )
+
+    # =========================================================================
+    # Training Complete
+    # =========================================================================
+    logger.info("\n" + "="*70)
+    logger.info("THREE-STAGE TRAINING COMPLETED!")
+    logger.info("="*70)
+    logger.info(f"Stage 1 (Junction): Best val loss = {best_val_loss_s1:.4f}")
+    logger.info(f"Stage 2 (GNN): Best val loss = {best_val_loss_s2:.4f}")
+    logger.info(f"Stage 3 (Full): Best val loss = {best_val_loss_s3:.4f}")
+    logger.info("="*70)
+
+    # Save final checkpoint (copy of stage 3 best)
     final_path = checkpoint_dir / 'final_model.pt'
-    save_checkpoint(model, optimizer, epoch, config, final_path,
-                   False, train_losses, val_losses)
+    best_stage3_path = checkpoint_dir / 'stage3_best.pt'
+    if best_stage3_path.exists():
+        logger.info(f"Copying best stage 3 model to final_model.pt...")
+        shutil.copy(best_stage3_path, final_path)
 
-    # Save training history
-    history_path = exp_dir / 'training_history.json'
-    with open(history_path, 'w') as f:
-        json.dump(train_history, f, indent=2)
-
-    logger.info(f"Training completed! Best validation loss: {best_val_loss:.4f}")
+    logger.info(f"Training completed! Best validation loss: {best_val_loss_s3:.4f}")
     logger.info(f"Results saved to: {exp_dir}")
 
     # Log final artifacts to W&B
     if not config.get('disable_wandb', False):
         # Log final model
-        final_artifact = wandb.Artifact(
-            name='final_model',
-            type='model',
-            description=f"Final model after {epoch} epochs"
-        )
-        final_artifact.add_file(str(final_path))
-        wandb.log_artifact(final_artifact)
-
-        # Log training history
-        history_artifact = wandb.Artifact(
-            name='training_history',
-            type='results',
-            description='Training and validation loss history'
-        )
-        history_artifact.add_file(str(history_path))
-        wandb.log_artifact(history_artifact)
+        if final_path.exists():
+            final_artifact = wandb.Artifact(
+                name='final_model',
+                type='model',
+                description=f"Final model (stage 3 best, val_loss={best_val_loss_s3:.4f})"
+            )
+            final_artifact.add_file(str(final_path))
+            wandb.log_artifact(final_artifact)
 
         # Log final summary metrics
-        wandb.summary['best_val_loss'] = best_val_loss
-        wandb.summary['final_epoch'] = epoch
+        wandb.summary['stage1_best_val_loss'] = best_val_loss_s1
+        wandb.summary['stage2_best_val_loss'] = best_val_loss_s2
+        wandb.summary['stage3_best_val_loss'] = best_val_loss_s3
+        wandb.summary['final_val_loss'] = best_val_loss_s3
         wandb.summary['total_params'] = num_params
         wandb.summary['trainable_params'] = num_trainable
 
-        # Finish W&B run
         wandb.finish()
         logger.info("W&B run finished successfully")
 

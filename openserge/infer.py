@@ -113,11 +113,15 @@ def load_model(checkpoint_path: str, k: Optional[int], backbone: str, device: to
     model_k = k if k is not None else config.get('k')
     model_backbone = config.get('backbone', backbone)
     model_use_fpn = config.get('use_fpn', False)
+    model_use_pos_encoding = config.get('use_pos_encoding', False)
+    model_img_size = config.get('img_size', 512)
 
     logger.info(f"Model configuration:")
     logger.info(f"  Backbone: {model_backbone}")
     logger.info(f"  k: {model_k if model_k is not None else 'complete graph'}")
     logger.info(f"  FPN: {model_use_fpn}")
+    logger.info(f"  Position encoding: {model_use_pos_encoding}")
+    logger.info(f"  Image size: {model_img_size}")
 
     if 'epoch' in checkpoint:
         logger.info(f"  Checkpoint epoch: {checkpoint['epoch']}")
@@ -125,7 +129,8 @@ def load_model(checkpoint_path: str, k: Optional[int], backbone: str, device: to
         logger.info(f"  Validation loss: {checkpoint['val_losses'].get('total', 'N/A'):.4f}")
 
     # Create model
-    model = OpenSERGE(backbone=model_backbone, k=model_k, use_fpn=model_use_fpn)
+    model = OpenSERGE(backbone=model_backbone, k=model_k, use_fpn=model_use_fpn,
+                      use_pos_encoding=model_use_pos_encoding, img_size=model_img_size)
 
     # Load weights
     model.load_state_dict(checkpoint['model_state_dict'])

@@ -52,18 +52,38 @@ class MLPScore(nn.Module):
         return self.net(z).squeeze(-1)  # logits
 
 class RoadGraphGNN(nn.Module):
-    def __init__(self, c_in=256, layers=(256,256,256), scorer_hidden=128):
+    def __init__(self, c_in=256, layers=(256,256,256), scorer_hidden=128, use_pos_encoding=False, img_size=512):
         super().__init__()
+        self.use_pos_encoding = use_pos_encoding
+        self.img_size = img_size
+
+        # If using positional encoding, expand input dimension
+        gnn_input_dim = c_in + 2 if use_pos_encoding else c_in
+
         convs = []
-        c_prev = c_in
+        c_prev = gnn_input_dim
         for c in layers:
             convs.append(EdgeConv(c_prev, c))
             c_prev = c
         self.convs = nn.ModuleList(convs)
         self.scorer = MLPScore(c_prev, scorer_hidden)
-    def forward(self, x, edges_src, edges_dst):
+
+    def forward(self, x, edges_src, edges_dst, nodes_xy=None):
+        """
+        Args:
+            x: Node features [N, C]
+            edges_src, edges_dst: Edge indices [E]
+            nodes_xy: Node positions [N, 2] in (x, y) pixel coordinates (optional)
+        """
+        if self.use_pos_encoding and nodes_xy is not None:
+            # Normalize positions to [0, 1]
+            pos_normalized = nodes_xy / self.img_size  # [N, 2]
+            # Concatenate normalized positions to node features
+            x = torch.cat([x, pos_normalized], dim=-1)  # [N, C+2]
+
         for conv in self.convs:
             x = conv(x, edges_src, edges_dst)
         return x  # node embeddings
+
     def score_edges(self, x, edges_src, edges_dst):
         return self.scorer(x[edges_src], x[edges_dst])

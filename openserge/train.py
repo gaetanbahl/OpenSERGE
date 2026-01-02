@@ -340,6 +340,7 @@ def main():
             'img_size': config.get('img_size', 512),
             'backbone': config.get('backbone', 'resnet50'),
             'use_fpn': config.get('use_fpn', False),
+            'use_pos_encoding': config.get('use_pos_encoding', False),
             'k': config.get('k'),
             'batch_size': config.get('batch_size', 8),
             'lr': config.get('lr', 0.001),
@@ -393,7 +394,9 @@ def main():
     model = OpenSERGE(
         backbone=config.get('backbone', 'resnet50'),
         k=config.get('k'),
-        use_fpn=config.get('use_fpn', False)
+        use_fpn=config.get('use_fpn', False),
+        use_pos_encoding=config.get('use_pos_encoding', False),
+        img_size=config.get('img_size', 512)
     ).to(device)
 
     num_params = sum(p.numel() for p in model.parameters())

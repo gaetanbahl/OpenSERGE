@@ -5,12 +5,13 @@ from .gnn import RoadGraphGNN
 from ..utils.graph import knn_graph, complete_graph
 
 class OpenSERGE(nn.Module):
-    def __init__(self, backbone='resnet50', nfeat=256, gnn_layers=(256,256,256), scorer_hidden=128, k: int=None, use_fpn=False):
+    def __init__(self, backbone='resnet50', nfeat=256, gnn_layers=(256,256,256), scorer_hidden=128, k: int=None, use_fpn=False, use_pos_encoding=False, img_size=512):
         super().__init__()
         self.ss = SingleShotRoadGraphNet(backbone=backbone, nfeat=nfeat, use_fpn=use_fpn)
         self.k = k  # if None -> complete graph, else k-NN prior
         self.proj = nn.Identity()  # if you want extra projection on node feature map per-paper
-        self.gnn = RoadGraphGNN(c_in=nfeat, layers=gnn_layers, scorer_hidden=scorer_hidden)
+        self.gnn = RoadGraphGNN(c_in=nfeat, layers=gnn_layers, scorer_hidden=scorer_hidden,
+                                use_pos_encoding=use_pos_encoding, img_size=img_size)
 
     def forward(self, images, j_thr=0.5, e_thr=0.5, max_nodes=2000):
         # Step 1: CNN
@@ -55,7 +56,7 @@ class OpenSERGE(nn.Module):
             else:
                 src, dst = knn_graph(nfeat, self.k)  # k-NN in feature space
             # GNN message passing
-            x_emb = self.gnn(nfeat, src, dst)
+            x_emb = self.gnn(nfeat, src, dst, nodes_xy=nodes_xy)
             # Edge scoring
             logits = self.gnn.score_edges(x_emb, src, dst)
             probs = torch.sigmoid(logits)

@@ -25,6 +25,8 @@ def parse_args():
                     help='Backbone architecture')
     ap.add_argument('--use_fpn', action='store_true',
                     help='Use Feature Pyramid Network to aggregate multi-level features')
+    ap.add_argument('--use_pos_encoding', action='store_true',
+                    help='Concatenate normalized (x,y) coordinates to node features for GNN')
     ap.add_argument('--k', type=int, default=None,
                     help='k for k-NN graph prior; None=complete graph')
     ap.add_argument('--pretrained_cnn', type=str, default=None,

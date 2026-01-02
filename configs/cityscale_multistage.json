@@ -6,6 +6,8 @@
   "preload": true,
   "backbone": "resnet50",
   "k": null,
+  "use_fpn": true,
+  "use_pos_encoding": true,
   "stage1_epochs": 1000,
   "stage1_patience": 100,
   "stage2_epochs": 1000,

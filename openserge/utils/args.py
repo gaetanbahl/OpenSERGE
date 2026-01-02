@@ -23,6 +23,8 @@ def parse_args():
     ap.add_argument('--backbone', type=str, default='resnet50',
                     choices=['resnet18', 'resnet50'],
                     help='Backbone architecture')
+    ap.add_argument('--use_fpn', action='store_true',
+                    help='Use Feature Pyramid Network to aggregate multi-level features')
     ap.add_argument('--k', type=int, default=None,
                     help='k for k-NN graph prior; None=complete graph')
     ap.add_argument('--pretrained_cnn', type=str, default=None,
@@ -32,15 +34,33 @@ def parse_args():
 
     # Training
     ap.add_argument('--epochs', type=int, default=50,
-                    help='Number of training epochs')
+                    help='Number of training epochs (used as default for single-stage training)')
     ap.add_argument('--batch_size', type=int, default=4,
                     help='Batch size for training')
     ap.add_argument('--lr', type=float, default=1e-3,
-                    help='Learning rate')
+                    help='Learning rate (used as default for single-stage training)')
     ap.add_argument('--weight_decay', type=float, default=1e-4,
                     help='Weight decay for optimizer')
     ap.add_argument('--junction_thresh', type=float, default=0.5,
                     help='Junction threshold for inference')
+
+    # Multi-stage training
+    ap.add_argument('--enable_multistage', action='store_true',
+                    help='Enable three-stage training: (1) junction-only, (2) GNN-only, (3) full model')
+    ap.add_argument('--stage1_epochs', type=int, default=600,
+                    help='Maximum epochs for stage 1 (junction detection)')
+    ap.add_argument('--stage2_epochs', type=int, default=100,
+                    help='Maximum epochs for stage 2 (GNN with frozen CNN)')
+    ap.add_argument('--stage3_epochs', type=int, default=50,
+                    help='Maximum epochs for stage 3 (full model fine-tuning)')
+    ap.add_argument('--stage3_lr_factor', type=float, default=0.1,
+                    help='Learning rate reduction factor for stage 3 (e.g., 0.1 = 10x reduction)')
+    ap.add_argument('--stage1_patience', type=int, default=20,
+                    help='Early stopping patience for stage 1 (junction detection)')
+    ap.add_argument('--stage2_patience', type=int, default=15,
+                    help='Early stopping patience for stage 2 (GNN training)')
+    ap.add_argument('--stage3_patience', type=int, default=10,
+                    help='Early stopping patience for stage 3 (full model fine-tuning)')
 
     # Loss weights
     ap.add_argument('--loss_weight_junction', type=float, default=1.0,

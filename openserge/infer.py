@@ -112,10 +112,12 @@ def load_model(checkpoint_path: str, k: Optional[int], backbone: str, device: to
     # Use checkpoint config with command-line overrides
     model_k = k if k is not None else config.get('k')
     model_backbone = config.get('backbone', backbone)
+    model_use_fpn = config.get('use_fpn', False)
 
     logger.info(f"Model configuration:")
     logger.info(f"  Backbone: {model_backbone}")
     logger.info(f"  k: {model_k if model_k is not None else 'complete graph'}")
+    logger.info(f"  FPN: {model_use_fpn}")
 
     if 'epoch' in checkpoint:
         logger.info(f"  Checkpoint epoch: {checkpoint['epoch']}")
@@ -123,7 +125,7 @@ def load_model(checkpoint_path: str, k: Optional[int], backbone: str, device: to
         logger.info(f"  Validation loss: {checkpoint['val_losses'].get('total', 'N/A'):.4f}")
 
     # Create model
-    model = OpenSERGE(backbone=model_backbone, k=model_k)
+    model = OpenSERGE(backbone=model_backbone, k=model_k, use_fpn=model_use_fpn)
 
     # Load weights
     model.load_state_dict(checkpoint['model_state_dict'])

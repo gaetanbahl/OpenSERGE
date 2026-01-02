@@ -339,6 +339,7 @@ def main():
             'data_root': config.get('data_root', 'N/A'),
             'img_size': config.get('img_size', 512),
             'backbone': config.get('backbone', 'resnet50'),
+            'use_fpn': config.get('use_fpn', False),
             'k': config.get('k'),
             'batch_size': config.get('batch_size', 8),
             'lr': config.get('lr', 0.001),
@@ -389,7 +390,11 @@ def main():
 
     # Create model
     logger.info("Creating model...")
-    model = OpenSERGE(backbone=config.get('backbone', 'resnet50'), k=config.get('k')).to(device)
+    model = OpenSERGE(
+        backbone=config.get('backbone', 'resnet50'),
+        k=config.get('k'),
+        use_fpn=config.get('use_fpn', False)
+    ).to(device)
 
     num_params = sum(p.numel() for p in model.parameters())
     num_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)

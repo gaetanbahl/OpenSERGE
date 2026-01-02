@@ -5,9 +5,9 @@ from .gnn import RoadGraphGNN
 from ..utils.graph import knn_graph, complete_graph
 
 class OpenSERGE(nn.Module):
-    def __init__(self, backbone='resnet50', nfeat=256, gnn_layers=(256,256,256), scorer_hidden=128, k: int=None):
+    def __init__(self, backbone='resnet50', nfeat=256, gnn_layers=(256,256,256), scorer_hidden=128, k: int=None, use_fpn=False):
         super().__init__()
-        self.ss = SingleShotRoadGraphNet(backbone=backbone, nfeat=nfeat)
+        self.ss = SingleShotRoadGraphNet(backbone=backbone, nfeat=nfeat, use_fpn=use_fpn)
         self.k = k  # if None -> complete graph, else k-NN prior
         self.proj = nn.Identity()  # if you want extra projection on node feature map per-paper
         self.gnn = RoadGraphGNN(c_in=nfeat, layers=gnn_layers, scorer_hidden=scorer_hidden)

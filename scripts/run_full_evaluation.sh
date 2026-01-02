@@ -1,20 +1,33 @@
 #!/bin/bash
 # Full evaluation script for OpenSERGE on Sat2Graph dataset
-# Runs inference on all regions and computes averaged TOPO and APLS metrics
+# Runs inference on selected regions and computes averaged TOPO and APLS metrics
 # Supports parallel processing for faster execution
+#
+# Usage:
+#   ./scripts/run_full_evaluation.sh [WEIGHTS] [N_JOBS] [EVAL_SPLIT]
+#
+# Arguments:
+#   WEIGHTS     - Path to model checkpoint (default: checkpoints/best_model.pt)
+#   N_JOBS      - Number of parallel jobs (default: 8)
+#   EVAL_SPLIT  - Dataset split to evaluate: 'train', 'valid', 'test', or 'all' (default: all)
+#
+# Examples:
+#   ./scripts/run_full_evaluation.sh checkpoints/best_model.pt 8 test
+#   ./scripts/run_full_evaluation.sh checkpoints/best_model.pt 4 valid
 
 set -e  # Exit on error
 
 # Configuration
 WEIGHTS="${1:-checkpoints/best_model.pt}"
 N_JOBS="${2:-8}"  # Number of parallel jobs
+EVAL_SPLIT="${3:-all}"  # Which split to evaluate: 'train', 'valid', 'test', or 'all' (default)
 DATA_ROOT="data/Sat2Graph/data/20cities"
 SPLIT_FILE="data/Sat2Graph/data/data_split.json"
-OUTPUT_ROOT="evaluation_results"
+OUTPUT_ROOT="evaluation_results_residual"
 STRIDE=384
 IMG_SIZE=512
 JUNCTION_THRESH=0.4
-EDGE_THRESH=0.5
+EDGE_THRESH=0.4
 MERGE_THRESH=16.0
 K=4
 
@@ -27,6 +40,7 @@ echo "========================================"
 echo "Checkpoint: $WEIGHTS"
 echo "Data root: $DATA_ROOT"
 echo "Output root: $OUTPUT_ROOT"
+echo "Evaluation split: $EVAL_SPLIT"
 echo "Parallel jobs: $N_JOBS"
 echo "Stride: $STRIDE"
 echo "========================================"
@@ -129,18 +143,56 @@ export -f compute_topo
 export -f compute_apls
 export WEIGHTS DATA_ROOT OUTPUT_ROOT STRIDE IMG_SIZE JUNCTION_THRESH EDGE_THRESH MERGE_THRESH K
 
-# Step 1: Run inference on all regions in parallel
+# Load data split information to filter regions
+python3 -c "
+import json
+import sys
+with open('$SPLIT_FILE', 'r') as f:
+    splits = json.load(f)
+
+if '$EVAL_SPLIT' == 'all':
+    region_ids = splits['train'] + splits['valid'] + splits['test']
+elif '$EVAL_SPLIT' in splits:
+    region_ids = splits['$EVAL_SPLIT']
+else:
+    print(f'Error: Invalid split \"$EVAL_SPLIT\". Must be one of: train, valid, test, all', file=sys.stderr)
+    sys.exit(1)
+
+for rid in sorted(region_ids):
+    print(rid)
+" > /tmp/regions_to_eval.txt
+
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to load split information"
+    exit 1
+fi
+
+NUM_REGIONS=$(wc -l < /tmp/regions_to_eval.txt)
+echo "Evaluating $NUM_REGIONS regions from split: $EVAL_SPLIT"
+
+# Step 1: Run inference on selected regions in parallel
 echo ""
-echo "[1/4] Running inference on all regions (parallel jobs: $N_JOBS)..."
+echo "[1/4] Running inference on $NUM_REGIONS regions (parallel jobs: $N_JOBS)..."
 echo ""
+
+# Create list of image files to process
+> /tmp/images_to_process.txt
+while read -r region; do
+    img_file="$DATA_ROOT/region_${region}_sat.png"
+    if [ -f "$img_file" ]; then
+        echo "$img_file" >> /tmp/images_to_process.txt
+    else
+        echo "Warning: Image not found for region $region: $img_file" >&2
+    fi
+done < /tmp/regions_to_eval.txt
 
 # Check if GNU parallel is available
 if command -v parallel &> /dev/null; then
     echo "Using GNU parallel for inference..."
-    find "$DATA_ROOT" -name "region_*_sat.png" | parallel -j $N_JOBS --progress run_inference
+    cat /tmp/images_to_process.txt | parallel -j $N_JOBS --progress run_inference
 else
     echo "GNU parallel not found, using xargs (less efficient)..."
-    find "$DATA_ROOT" -name "region_*_sat.png" | xargs -P $N_JOBS -I {} bash -c 'run_inference "$@"' _ {}
+    cat /tmp/images_to_process.txt | xargs -P $N_JOBS -I {} bash -c 'run_inference "$@"' _ {}
 fi
 
 echo ""

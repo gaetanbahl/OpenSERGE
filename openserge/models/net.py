@@ -19,9 +19,9 @@ class JunctionOffsetHead(nn.Module):
     """Three-branch head: junctionness (1 ch), offset (2 ch), node features (Nfeat)."""
     def __init__(self, c_in: int, nfeat: int = 256):
         super().__init__()
-        self.jun = nn.Sequential(ConvBNReLU(c_in, nfeat), ConvBNReLU(nfeat, nfeat), nn.Conv2d(nfeat, 1, 1))
-        self.off = nn.Sequential(ConvBNReLU(c_in, nfeat), ConvBNReLU(nfeat, nfeat), nn.Conv2d(nfeat, 2, 1), nn.Tanh())
-        self.nfe = nn.Sequential(ConvBNReLU(c_in, nfeat), ConvBNReLU(nfeat, nfeat), nn.Conv2d(nfeat, nfeat, 1))
+        self.jun = nn.Sequential(ConvBNReLU(c_in, nfeat), ConvBNReLU(nfeat, nfeat), ConvBNReLU(nfeat, nfeat), nn.Conv2d(nfeat, 1, 1))
+        self.off = nn.Sequential(ConvBNReLU(c_in, nfeat), ConvBNReLU(nfeat, nfeat), ConvBNReLU(nfeat, nfeat), nn.Conv2d(nfeat, 2, 1), nn.Tanh())
+        self.nfe = nn.Sequential(ConvBNReLU(c_in, nfeat), ConvBNReLU(nfeat, nfeat), ConvBNReLU(nfeat, nfeat), nn.Conv2d(nfeat, nfeat, 1))
     def forward(self, f):
         j = self.jun(f)  # [B,1,H',W']
         o = 0.5 * self.off(f)  # constrain to [-0.5, 0.5]

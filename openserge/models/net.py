@@ -1,6 +1,6 @@
 from typing import Tuple, Dict, Optional
 import torch, torch.nn as nn, torch.nn.functional as F
-from torchvision.models import resnet18, resnet50
+import timm
 from ..utils.utils import build_grid
 
 class ConvBNReLU(nn.Module):
@@ -130,55 +130,142 @@ class FPN(nn.Module):
 
 
 class Backbone(nn.Module):
-    def __init__(self, name: str = 'resnet50', pretrained: bool = False, use_fpn: bool = False):
+    """
+    Feature extraction backbone using timm library.
+
+    Supports any timm model with automatic pretrained weight loading.
+    Uses features_only=True for FPN compatibility (multi-scale features).
+    """
+    def __init__(self, name: str = 'resnet50', use_fpn: bool = False):
         super().__init__()
-        if name == 'resnet50':
-            m = resnet50(weights=None if not pretrained else 'DEFAULT')
-            c_out = 2048
-            # Channel counts for [layer1, layer2, layer3, layer4]
-            fpn_channels = [256, 512, 1024, 2048]
-        elif name == 'resnet18':
-            m = resnet18(weights=None if not pretrained else 'DEFAULT')
-            c_out = 512
-            # Channel counts for [layer1, layer2, layer3, layer4]
-            fpn_channels = [64, 128, 256, 512]
-        else:
-            raise ValueError('Unsupported backbone')
-
-        self.stem = nn.Sequential(m.conv1, m.bn1, m.relu, m.maxpool)
-        # Store layers separately for FPN
-        self.layer1 = m.layer1
-        self.layer2 = m.layer2
-        self.layer3 = m.layer3
-        self.layer4 = m.layer4
-
+        self.name = name
         self.use_fpn = use_fpn
+
+        # Validate model exists and check if pretrained weights are available
+        pretrained = self._check_pretrained_available(name)
+
         if use_fpn:
+            # Create feature extractor with multi-scale outputs
+            # out_indices=(0,1,2,3) gives us 4 feature levels at strides [4, 8, 16, 32]
+            self.model = timm.create_model(
+                name,
+                pretrained=pretrained,
+                features_only=True,
+                out_indices=(0, 1, 2, 3)
+            )
+
+            # Get feature channel information from the model
+            fpn_channels = self.model.feature_info.channels()
+
+            # Verify we got 4 feature levels
+            if len(fpn_channels) != 4:
+                raise ValueError(f"Model {name} returned {len(fpn_channels)} features, expected 4. "
+                               f"Channels: {fpn_channels}")
+
+            # Create FPN to aggregate multi-scale features
             self.fpn = FPN(fpn_channels, out_channels=256)
             self.c_out = 256
+
         else:
-            self.c_out = c_out
+            # Create single-scale feature extractor (last layer only)
+            self.model = timm.create_model(
+                name,
+                pretrained=pretrained,
+                num_classes=0,  # Remove classifier
+                global_pool=''  # Remove global pooling
+            )
+
+            # Get output channels
+            # For models with feature_info, use it; otherwise infer from model
+            if hasattr(self.model, 'num_features'):
+                self.c_out = self.model.num_features
+            elif hasattr(self.model, 'feature_info'):
+                self.c_out = self.model.feature_info.channels()[-1]
+            else:
+                # Fallback: run a dummy forward pass to get output shape
+                with torch.no_grad():
+                    dummy_input = torch.randn(1, 3, 224, 224)
+                    dummy_output = self.model(dummy_input)
+                    self.c_out = dummy_output.shape[1]
 
         self.stride = 32  # Output is always at stride 32
 
-    def forward(self, x):
-        x = self.stem(x)
+    def _check_pretrained_available(self, model_name: str) -> bool:
+        """
+        Check if model exists in timm and if pretrained weights are available.
 
+        Returns:
+            True if pretrained weights available, False otherwise
+
+        Raises:
+            ValueError if model doesn't exist at all
+        """
+        # Try to create model to check if it exists
+        # This is the most reliable way since timm.list_models() uses patterns
+        try:
+            # Try with pretrained first
+            timm.create_model(model_name, pretrained=True, num_classes=0)
+            print(f"Loading {model_name} with pretrained weights")
+            return True
+        except RuntimeError as e:
+            # Pretrained weights not available, try without
+            if 'pretrained' in str(e).lower() or 'weight' in str(e).lower():
+                try:
+                    timm.create_model(model_name, pretrained=False, num_classes=0)
+                    print(f"Loading {model_name} without pretrained weights (not available)")
+                    return False
+                except Exception:
+                    pass
+            # Model doesn't exist at all
+            # Try to find similar models for helpful error message
+            similar = timm.list_models(f'{model_name.split(".")[0]}*')[:5]
+            if similar:
+                raise ValueError(
+                    f"Model '{model_name}' not found in timm. "
+                    f"Did you mean one of these? {similar}"
+                )
+            else:
+                raise ValueError(
+                    f"Model '{model_name}' not found in timm. "
+                    f"Use `timm.list_models()` to see available models, "
+                    f"or check https://huggingface.co/timm"
+                )
+        except Exception as e:
+            # Some other error - model likely doesn't exist
+            similar = timm.list_models(f'{model_name.split(".")[0]}*')[:5]
+            if similar:
+                raise ValueError(
+                    f"Model '{model_name}' not found or failed to load: {e}. "
+                    f"Did you mean one of these? {similar}"
+                )
+            else:
+                raise ValueError(
+                    f"Model '{model_name}' not found in timm: {e}"
+                )
+
+    def forward(self, x):
+        """
+        Forward pass.
+
+        Args:
+            x: Input tensor [B, 3, H, W]
+
+        Returns:
+            Feature map [B, C, H/32, W/32]
+        """
         if self.use_fpn:
-            # Extract multi-level features
-            c2 = self.layer1(x)   # stride 4
-            c3 = self.layer2(c2)  # stride 8
-            c4 = self.layer3(c3)  # stride 16
-            c5 = self.layer4(c4)  # stride 32
+            # Get multi-scale features
+            features = self.model(x)  # List of [B, C_i, H_i, W_i]
+
+            # Verify we got 4 features
+            if len(features) != 4:
+                raise RuntimeError(f"Expected 4 feature levels, got {len(features)}")
 
             # Aggregate through FPN
-            x = self.fpn([c2, c3, c4, c5])
+            x = self.fpn(features)
         else:
-            # Standard forward pass
-            x = self.layer1(x)
-            x = self.layer2(x)
-            x = self.layer3(x)
-            x = self.layer4(x)
+            # Single-scale forward pass
+            x = self.model(x)
 
         return x  # [B, C, H/32, W/32]
 

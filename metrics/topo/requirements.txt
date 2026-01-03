@@ -1,0 +1,3 @@
+# Python dependencies for TOPO metric
+hopcroftkarp>=1.2.5
+rtree>=1.0.0

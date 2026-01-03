@@ -26,8 +26,8 @@ SPLIT_FILE="data/Sat2Graph/data/data_split.json"
 OUTPUT_ROOT="evaluation_results_residual"
 STRIDE=384
 IMG_SIZE=512
-JUNCTION_THRESH=0.4
-EDGE_THRESH=0.4
+JUNCTION_THRESH=0.5
+EDGE_THRESH=0.5
 MERGE_THRESH=16.0
 K=4
 
@@ -92,12 +92,12 @@ compute_topo() {
 
     echo "[TOPO] Computing TOPO for region $region..."
 
-    cd metrics/Sat2Graph/metrics/topo
+    cd metrics/topo
     python main.py \
-        -graph_gt "../../../../$gt_graph" \
-        -graph_prop "../../../../$pred_graph" \
-        -output "../../../../$output_file" 2>&1 | tee "../../../../$OUTPUT_ROOT/logs/topo_${region}.log"
-    cd ../../../../
+        -graph_gt "../../$gt_graph" \
+        -graph_prop "../../$pred_graph" \
+        -output "../../$output_file" 2>&1 | tee "../../$OUTPUT_ROOT/logs/topo_${region}.log"
+    cd ../../
 
     echo "[TOPO] Region $region complete."
 }
@@ -120,19 +120,19 @@ compute_apls() {
 
     echo "[APLS] Computing APLS for region $region..."
 
-    cd metrics/Sat2Graph/metrics/apls
+    cd metrics/apls
 
     # Convert to JSON format
-    python convert.py "../../../../$gt_graph" "../../../../$OUTPUT_ROOT/metrics/apls/region_${region}_gt.json" 2>&1
-    python convert.py "../../../../$pred_graph" "../../../../$OUTPUT_ROOT/metrics/apls/region_${region}_pred.json" 2>&1
+    python convert.py "../../$gt_graph" "../../$OUTPUT_ROOT/metrics/apls/region_${region}_gt.json" 2>&1
+    python convert.py "../../$pred_graph" "../../$OUTPUT_ROOT/metrics/apls/region_${region}_pred.json" 2>&1
 
     # Run APLS
     go run main.go \
-        "../../../../$OUTPUT_ROOT/metrics/apls/region_${region}_gt.json" \
-        "../../../../$OUTPUT_ROOT/metrics/apls/region_${region}_pred.json" \
-        "../../../../$OUTPUT_ROOT/metrics/apls/apls_${region}.txt" 2>&1 | tee "../../../../$OUTPUT_ROOT/logs/apls_${region}.log"
+        "../../$OUTPUT_ROOT/metrics/apls/region_${region}_gt.json" \
+        "../../$OUTPUT_ROOT/metrics/apls/region_${region}_pred.json" \
+        "../../$OUTPUT_ROOT/metrics/apls/apls_${region}.txt" 2>&1 | tee "../../$OUTPUT_ROOT/logs/apls_${region}.log"
 
-    cd ../../../../
+    cd ../../
 
     echo "[APLS] Region $region complete."
 }
@@ -201,12 +201,12 @@ echo ""
 
 # Step 2: Setup APLS (only once)
 echo "[Setup] Initializing APLS Go dependencies..."
-cd metrics/Sat2Graph/metrics/apls
+cd metrics/apls
 if [ ! -f "go.mod" ]; then
     go mod init apls
     go get github.com/dhconnelly/rtreego
 fi
-cd ../../../../
+cd ../../
 
 # Step 3: Compute TOPO metrics in parallel
 echo ""

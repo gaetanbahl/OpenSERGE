@@ -13,6 +13,16 @@ class OpenSERGE(nn.Module):
         self.gnn = RoadGraphGNN(c_in=nfeat, layers=gnn_layers, scorer_hidden=scorer_hidden,
                                 use_pos_encoding=use_pos_encoding, img_size=img_size)
 
+    @property
+    def normalize_mean(self):
+        """Get normalization mean from backbone's pretrained config."""
+        return self.ss.backbone.normalize_mean
+
+    @property
+    def normalize_std(self):
+        """Get normalization std from backbone's pretrained config."""
+        return self.ss.backbone.normalize_std
+
     def forward(self, images, j_thr=0.5, e_thr=0.5, max_nodes=2000):
         # Step 1: CNN
         out = self.ss(images)

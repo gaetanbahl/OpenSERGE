@@ -411,6 +411,10 @@ def main():
         img_size=config.get('img_size', 512)
     ).to(device)
 
+    # Store normalization parameters from backbone in config
+    config['normalize_mean'] = model.normalize_mean
+    config['normalize_std'] = model.normalize_std
+
     num_params = sum(p.numel() for p in model.parameters())
     num_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Model parameters: {num_params:,} (trainable: {num_trainable:,})")
@@ -429,10 +433,16 @@ def main():
     logger.info("Loading datasets (skip_edges=True)...")
     train_dataset_s1 = DatasetClass(config['data_root'], split='train',
                                     img_size=config.get('img_size', 512), aug=True,
-                                    preload=preload, skip_edges=True, **dataset_kwargs)
+                                    preload=preload, skip_edges=True,
+                                    normalize_mean=config.get('normalize_mean'),
+                                    normalize_std=config.get('normalize_std'),
+                                    **dataset_kwargs)
     val_dataset_s1 = DatasetClass(config['data_root'], split='valid',
                                   img_size=config.get('img_size', 512), aug=False,
-                                  preload=preload, skip_edges=True, **dataset_kwargs)
+                                  preload=preload, skip_edges=True,
+                                  normalize_mean=config.get('normalize_mean'),
+                                  normalize_std=config.get('normalize_std'),
+                                  **dataset_kwargs)
 
     train_loader_s1 = DataLoader(
         train_dataset_s1, batch_size=config.get('batch_size', 8), shuffle=True,
@@ -496,10 +506,16 @@ def main():
     logger.info("Loading datasets (with edges)...")
     train_dataset_s2 = DatasetClass(config['data_root'], split='train',
                                     img_size=config.get('img_size', 512), aug=True,
-                                    preload=preload, skip_edges=False, **dataset_kwargs)
+                                    preload=preload, skip_edges=False,
+                                    normalize_mean=config.get('normalize_mean'),
+                                    normalize_std=config.get('normalize_std'),
+                                    **dataset_kwargs)
     val_dataset_s2 = DatasetClass(config['data_root'], split='valid',
                                   img_size=config.get('img_size', 512), aug=False,
-                                  preload=preload, skip_edges=False, **dataset_kwargs)
+                                  preload=preload, skip_edges=False,
+                                  normalize_mean=config.get('normalize_mean'),
+                                  normalize_std=config.get('normalize_std'),
+                                  **dataset_kwargs)
 
     train_loader_s2 = DataLoader(
         train_dataset_s2, batch_size=config.get('batch_size', 8), shuffle=True,

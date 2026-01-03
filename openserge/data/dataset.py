@@ -21,7 +21,8 @@ class RoadGraphDataset(Dataset):
 
     def __init__(self, data_root: str, split: str = 'train', img_size: int = 512,
                  stride: int = 32, aug: bool = True, preload: bool = False,
-                 skip_edges: bool = False):
+                 skip_edges: bool = False, normalize_mean: Tuple[float, float, float] = None,
+                 normalize_std: Tuple[float, float, float] = None):
         """
         Args:
             data_root: Path to dataset directory
@@ -31,6 +32,8 @@ class RoadGraphDataset(Dataset):
             aug: Whether to apply augmentation (default True)
             preload: Whether to preload all data into memory (default False)
             skip_edges: Whether to skip edge extraction (default False)
+            normalize_mean: Mean for normalization (default None = no normalization)
+            normalize_std: Std for normalization (default None = no normalization)
         """
         self.root = data_root
         self.split = split
@@ -38,6 +41,8 @@ class RoadGraphDataset(Dataset):
         self.stride = stride
         self.aug = aug
         self.preload = preload
+        self.normalize_mean = normalize_mean
+        self.normalize_std = normalize_std
         self.skip_edges = skip_edges
 
         # To be populated by subclass
@@ -269,9 +274,17 @@ class RoadGraphDataset(Dataset):
                 img, junction_map, offset_map, offset_mask, edges
             )
 
-        # Convert to tensors
+        # Convert to tensors and normalize
+        img_tensor = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0  # [C, H, W] in [0, 1]
+
+        # Apply normalization if specified
+        if self.normalize_mean is not None and self.normalize_std is not None:
+            mean = torch.tensor(self.normalize_mean).view(3, 1, 1)
+            std = torch.tensor(self.normalize_std).view(3, 1, 1)
+            img_tensor = (img_tensor - mean) / std
+
         sample = {
-            'image': torch.from_numpy(img).permute(2, 0, 1).float() / 255.0,
+            'image': img_tensor,
             'junction_map': torch.from_numpy(junction_map),
             'offset_map': torch.from_numpy(offset_map),
             'offset_mask': torch.from_numpy(offset_mask),

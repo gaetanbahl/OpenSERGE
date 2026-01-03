@@ -89,7 +89,7 @@ def parse_args():
     return ap.parse_args()
 
 
-def load_model(checkpoint_path: str, k: Optional[int], backbone: str, device: torch.device, logger) -> OpenSERGE:
+def load_model(checkpoint_path: str, k: Optional[int], backbone: str, device: torch.device, logger) -> Tuple[OpenSERGE, Tuple, Tuple]:
     """
     Load model from checkpoint.
 
@@ -101,7 +101,10 @@ def load_model(checkpoint_path: str, k: Optional[int], backbone: str, device: to
         logger: Logger instance
 
     Returns:
-        Loaded OpenSERGE model in eval mode
+        (model, normalize_mean, normalize_std) where:
+            model: Loaded OpenSERGE model in eval mode
+            normalize_mean: Normalization mean (or None)
+            normalize_std: Normalization std (or None)
     """
     logger.info(f"Loading checkpoint from {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -116,12 +119,20 @@ def load_model(checkpoint_path: str, k: Optional[int], backbone: str, device: to
     model_use_pos_encoding = config.get('use_pos_encoding', False)
     model_img_size = config.get('img_size', 512)
 
+    # Extract normalization parameters from config
+    normalize_mean = config.get('normalize_mean')
+    normalize_std = config.get('normalize_std')
+
     logger.info(f"Model configuration:")
     logger.info(f"  Backbone: {model_backbone}")
     logger.info(f"  k: {model_k if model_k is not None else 'complete graph'}")
     logger.info(f"  FPN: {model_use_fpn}")
     logger.info(f"  Position encoding: {model_use_pos_encoding}")
     logger.info(f"  Image size: {model_img_size}")
+    if normalize_mean is not None and normalize_std is not None:
+        logger.info(f"  Normalization: mean={normalize_mean}, std={normalize_std}")
+    else:
+        logger.info(f"  Normalization: None (using [0,1] scaling)")
 
     if 'epoch' in checkpoint:
         logger.info(f"  Checkpoint epoch: {checkpoint['epoch']}")
@@ -141,7 +152,7 @@ def load_model(checkpoint_path: str, k: Optional[int], backbone: str, device: to
     num_params = sum(p.numel() for p in model.parameters())
     logger.info(f"  Parameters: {num_params:,}")
 
-    return model
+    return model, normalize_mean, normalize_std
 
 
 def load_image(image_path: str, logger) -> np.ndarray:
@@ -210,7 +221,8 @@ def extract_tiles(img: np.ndarray, tile_size: int, stride: int, logger) -> List[
 
 def process_tile(tile: np.ndarray, model: OpenSERGE, device: torch.device,
                  junction_thresh: float, edge_thresh: float, max_nodes: int,
-                 y_offset: int, x_offset: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+                 y_offset: int, x_offset: int, normalize_mean: Tuple[float, float, float] = None,
+                 normalize_std: Tuple[float, float, float] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Process a single tile through the model.
 
@@ -223,6 +235,8 @@ def process_tile(tile: np.ndarray, model: OpenSERGE, device: torch.device,
         max_nodes: Maximum nodes per tile
         y_offset: Y offset of tile in original image
         x_offset: X offset of tile in original image
+        normalize_mean: Mean for normalization (default None)
+        normalize_std: Std for normalization (default None)
 
     Returns:
         (nodes, edges, edge_probs) where:
@@ -232,6 +246,13 @@ def process_tile(tile: np.ndarray, model: OpenSERGE, device: torch.device,
     """
     # Prepare input tensor
     tile_tensor = torch.from_numpy(tile).permute(2, 0, 1).float() / 255.0
+
+    # Apply normalization if specified
+    if normalize_mean is not None and normalize_std is not None:
+        mean = torch.tensor(normalize_mean).view(3, 1, 1)
+        std = torch.tensor(normalize_std).view(3, 1, 1)
+        tile_tensor = (tile_tensor - mean) / std
+
     tile_tensor = tile_tensor.unsqueeze(0).to(device)
 
     # Run inference
@@ -509,7 +530,7 @@ def main():
     logger.info(f"Using device: {device}")
 
     # Load model
-    model = load_model(args.weights, args.k, args.backbone, device, logger)
+    model, normalize_mean, normalize_std = load_model(args.weights, args.k, args.backbone, device, logger)
 
     # Load image
     img = load_image(args.image, logger)
@@ -525,7 +546,7 @@ def main():
         nodes, edges, edge_probs = process_tile(
             tile, model, device,
             args.junction_thresh, args.edge_thresh, args.max_nodes,
-            y_offset, x_offset
+            y_offset, x_offset, normalize_mean, normalize_std
         )
         tile_results.append((nodes, edges, edge_probs))
 

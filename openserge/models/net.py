@@ -144,6 +144,10 @@ class Backbone(nn.Module):
         # Validate model exists and check if pretrained weights are available
         pretrained = self._check_pretrained_available(name)
 
+        # Store normalization parameters for later use
+        self.normalize_mean = None
+        self.normalize_std = None
+
         if use_fpn:
             # Create feature extractor with multi-scale outputs
             # We need the last 4 feature levels at strides [4, 8, 16, 32]
@@ -223,6 +227,17 @@ class Backbone(nn.Module):
                     self.c_out = dummy_output.shape[1]
 
         self.stride = 32  # Output is always at stride 32
+
+        # Extract normalization parameters from pretrained_cfg
+        if hasattr(self.model, 'pretrained_cfg') and self.model.pretrained_cfg:
+            self.normalize_mean = self.model.pretrained_cfg.get('mean', (0.485, 0.456, 0.406))
+            self.normalize_std = self.model.pretrained_cfg.get('std', (0.229, 0.224, 0.225))
+            print(f"Using normalization: mean={self.normalize_mean}, std={self.normalize_std}")
+        else:
+            # Default: no normalization (just [0, 1] scaling)
+            self.normalize_mean = (0.0, 0.0, 0.0)
+            self.normalize_std = (1.0, 1.0, 1.0)
+            print(f"No pretrained_cfg found, using [0,1] scaling (no normalization)")
 
     def _check_pretrained_available(self, model_name: str) -> bool:
         """

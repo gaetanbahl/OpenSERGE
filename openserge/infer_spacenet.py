@@ -9,7 +9,7 @@ import json
 import logging
 import pickle
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -80,8 +80,16 @@ def parse_args():
     return ap.parse_args()
 
 
-def load_model(checkpoint_path: str, k: Optional[int], device: torch.device, logger) -> OpenSERGE:
-    """Load model from checkpoint."""
+def load_model(checkpoint_path: str, k: Optional[int], device: torch.device, logger) -> Tuple[OpenSERGE, Tuple, Tuple]:
+    """
+    Load model from checkpoint.
+
+    Returns:
+        (model, normalize_mean, normalize_std) where:
+            model: Loaded OpenSERGE model in eval mode
+            normalize_mean: Normalization mean (or None)
+            normalize_std: Normalization std (or None)
+    """
     logger.info(f"Loading checkpoint from {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
@@ -95,12 +103,20 @@ def load_model(checkpoint_path: str, k: Optional[int], device: torch.device, log
     model_use_pos_encoding = config.get('use_pos_encoding', False)
     model_img_size = config.get('img_size', 512)
 
+    # Extract normalization parameters from config
+    normalize_mean = config.get('normalize_mean')
+    normalize_std = config.get('normalize_std')
+
     logger.info(f"Model configuration:")
     logger.info(f"  Backbone: {model_backbone}")
     logger.info(f"  k: {model_k if model_k is not None else 'complete graph'}")
     logger.info(f"  FPN: {model_use_fpn}")
     logger.info(f"  Position encoding: {model_use_pos_encoding}")
     logger.info(f"  Image size: {model_img_size}")
+    if normalize_mean is not None and normalize_std is not None:
+        logger.info(f"  Normalization: mean={normalize_mean}, std={normalize_std}")
+    else:
+        logger.info(f"  Normalization: None (using [0,1] scaling)")
 
     if 'epoch' in checkpoint:
         logger.info(f"  Checkpoint epoch: {checkpoint['epoch']}")
@@ -120,7 +136,7 @@ def load_model(checkpoint_path: str, k: Optional[int], device: torch.device, log
     num_params = sum(p.numel() for p in model.parameters())
     logger.info(f"  Parameters: {num_params:,}")
 
-    return model
+    return model, normalize_mean, normalize_std
 
 
 def load_and_preprocess_image(image_path: str, target_size: int, logger) -> tuple:
@@ -148,7 +164,9 @@ def load_and_preprocess_image(image_path: str, target_size: int, logger) -> tupl
 
 
 def run_inference(model: OpenSERGE, img: np.ndarray, junction_thresh: float,
-                  edge_thresh: float, max_nodes: int, device: torch.device, logger) -> Dict:
+                  edge_thresh: float, max_nodes: int, device: torch.device, logger,
+                  normalize_mean: Optional[Tuple[float, float, float]] = None,
+                  normalize_std: Optional[Tuple[float, float, float]] = None) -> Dict:
     """
     Run model inference on a single image.
 
@@ -158,7 +176,14 @@ def run_inference(model: OpenSERGE, img: np.ndarray, junction_thresh: float,
     logger.info("Running inference...")
 
     # Prepare image tensor
-    img_tensor = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
+    img_tensor = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0  # [C, H, W] in [0, 1]
+
+    # Apply normalization if specified
+    if normalize_mean is not None and normalize_std is not None:
+        mean = torch.tensor(normalize_mean).view(3, 1, 1)
+        std = torch.tensor(normalize_std).view(3, 1, 1)
+        img_tensor = (img_tensor - mean) / std
+
     img_tensor = img_tensor.unsqueeze(0).to(device)  # [1, 3, H, W]
 
     # Run model
@@ -341,7 +366,7 @@ def main():
     logger.info(f"Using device: {device}")
 
     # Load model
-    model = load_model(args.weights, args.k, device, logger)
+    model, normalize_mean, normalize_std = load_model(args.weights, args.k, device, logger)
 
     # Load and preprocess image
     img_resized, (original_h, original_w), scale_factor = load_and_preprocess_image(
@@ -350,7 +375,7 @@ def main():
 
     # Run inference on resized image
     graph = run_inference(model, img_resized, args.junction_thresh, args.edge_thresh,
-                         args.max_nodes, device, logger)
+                         args.max_nodes, device, logger, normalize_mean, normalize_std)
 
     # Scale graph back to original resolution
     graph_original = scale_graph_to_original(graph, scale_factor, logger)

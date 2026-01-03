@@ -1,3 +1,6 @@
 # Python dependencies for TOPO metric
+numpy>=1.20.0
+scipy>=1.7.0
 hopcroftkarp>=1.2.5
 rtree>=1.0.0
+svgwrite>=1.4.0

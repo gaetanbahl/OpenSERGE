@@ -1,4 +1,4 @@
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
 import os, json, random, math, cv2, numpy as np, torch
 from torch.utils.data import Dataset
 import sys
@@ -6,49 +6,31 @@ import glob
 import pickle
 
 
-class CityScale(Dataset):
+class RoadGraphDataset(Dataset):
     """
-    Dataset for Sat2Graph/CityScale data.
-    Expected structure:
-      data_root/
-        20cities/
-          region_0_sat.png
-          region_0_graph_gt.pickle
-          ...
-        data_split.json
+    Base class for road graph extraction datasets.
 
-    The graph pickle files contain a dict mapping (y,x) node coordinates to lists of (y,x) neighbors.
+    Provides common functionality for loading graph data, rasterizing to junction/offset maps,
+    and applying data augmentation.
 
-    Example usage:
-        >>> from openserge.data.dataset import CityScale
-        >>> dataset = CityScale('Sat2Graph/data/data', split='train')
-        >>> sample = dataset[0]
-        >>> print(sample['image'].shape)  # [3, 512, 512]
-        >>> print(sample['junction_map'].shape)  # [1, 16, 16]
-        >>> print(sample['offset_map'].shape)  # [2, 16, 16]
-        >>> print(sample['offset_mask'].shape)  # [1, 16, 16]
-        >>> print(len(sample['edges']))  # number of edges in the graph
-
-    Returns:
-        Sample dict with keys:
-            - 'image': [3, H, W] RGB image tensor, normalized to [0, 1]
-            - 'junction_map': [1, h, w] binary junction map (1 = junction present)
-            - 'offset_map': [2, h, w] offset from grid cell center to exact junction location
-            - 'offset_mask': [1, h, w] mask indicating which cells have junctions
-            - 'edges': List of ((i1, j1), (i2, j2)) tuples representing edges in grid coordinates
-            - 'meta': dict with 'region_id', 'crop_y0', 'crop_x0'
-        where h = H // stride, w = W // stride, and (i, j) are grid indices from 0 to h-1, w-1
+    Subclasses must implement:
+        - _discover_samples(): Populate self.samples list
+        - _load_and_preprocess_image(sample_info): Load and preprocess image for a sample
+        - _get_metadata(sample_info, ...): Get sample-specific metadata
     """
-    def __init__(self, data_root, split='train', img_size=512, stride=32, aug=True, preload=False, skip_edges=False):
+
+    def __init__(self, data_root: str, split: str = 'train', img_size: int = 512,
+                 stride: int = 32, aug: bool = True, preload: bool = False,
+                 skip_edges: bool = False):
         """
         Args:
-            data_root: Path to Sat2Graph/data/data directory
-            split: 'train', 'valid', or 'test'
-            img_size: Size of image crops (default 512)
+            data_root: Path to dataset directory
+            split: Dataset split ('train', 'valid'/'validation', 'test')
+            img_size: Target image size (default 512)
             stride: Downsampling stride for junction/offset maps (default 32)
             aug: Whether to apply augmentation (default True)
             preload: Whether to preload all data into memory (default False)
-            skip_edges: Whether to skip edge extraction (default False, set True for junction-only training)
+            skip_edges: Whether to skip edge extraction (default False)
         """
         self.root = data_root
         self.split = split
@@ -58,47 +40,35 @@ class CityScale(Dataset):
         self.preload = preload
         self.skip_edges = skip_edges
 
-        # Load data split
-        split_path = os.path.join(data_root, 'data_split.json')
-        with open(split_path, 'r') as f:
-            splits = json.load(f)
-        self.region_ids = splits[split]
-
-        # Path to 20cities directory
-        self.data_dir = os.path.join(data_root, '20cities')
-
-        # Load all graphs and images
+        # To be populated by subclass
         self.samples = []
-        for region_id in self.region_ids:
-            img_path = os.path.join(self.data_dir, f'region_{region_id}_sat.png')
-            graph_path = os.path.join(self.data_dir, f'region_{region_id}_graph_gt.pickle')
 
-            if os.path.exists(img_path) and os.path.exists(graph_path):
-                self.samples.append({
-                    'region_id': region_id,
-                    'img_path': img_path,
-                    'graph_path': graph_path
-                })
+        # Discover samples (implemented by subclass)
+        self._discover_samples()
 
-        # Preload data into memory if requested
+        # Preload data if requested
         self.preloaded_data = None
         if self.preload:
-            print(f"Preloading {len(self.samples)} samples into memory...")
-            self.preloaded_data = []
-            for sample_info in self.samples:
-                # Load image
-                img = cv2.imread(sample_info['img_path'], cv2.IMREAD_COLOR)
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            self._preload_all_data()
 
-                # Load graph
-                graph = self._load_graph(sample_info['graph_path'])
+    def _discover_samples(self):
+        """Discover and populate self.samples. Must be implemented by subclass."""
+        raise NotImplementedError("Subclass must implement _discover_samples()")
 
-                self.preloaded_data.append({
-                    'region_id': sample_info['region_id'],
-                    'image': img,
-                    'graph': graph
-                })
-            print(f"Preloading complete!")
+    def _load_and_preprocess_image(self, sample_info: Dict) -> Tuple[np.ndarray, Dict]:
+        """
+        Load and preprocess image for a sample.
+        Must be implemented by subclass.
+
+        Returns:
+            img: Preprocessed image array [H, W, 3]
+            preprocessing_info: Dict with preprocessing metadata (e.g., crop coords, scale factor)
+        """
+        raise NotImplementedError("Subclass must implement _load_and_preprocess_image()")
+
+    def _get_metadata(self, sample_info: Dict, preprocessing_info: Dict) -> Dict:
+        """Get sample-specific metadata. Must be implemented by subclass."""
+        raise NotImplementedError("Subclass must implement _get_metadata()")
 
     def __len__(self):
         return len(self.samples)
@@ -109,678 +79,40 @@ class CityScale(Dataset):
             graph = pickle.load(f)
         return graph
 
+    def _preload_all_data(self):
+        """Preload all samples into memory."""
+        print(f"Preloading {len(self.samples)} samples into memory...")
+        self.preloaded_data = []
+
+        for sample_info in self.samples:
+            # Load and preprocess image
+            img, preprocessing_info = self._load_and_preprocess_image(sample_info)
+
+            # Load graph
+            graph = self._load_graph(sample_info['graph_path'])
+
+            # Store with preprocessing info for later use
+            preloaded_item = {
+                'image': img,
+                'graph': graph,
+                'preprocessing_info': preprocessing_info
+            }
+            preloaded_item.update(sample_info)  # Include original sample info
+
+            self.preloaded_data.append(preloaded_item)
+
+        print(f"Preloading complete!")
+
     def _rasterize_graph(self, graph: Dict, crop_y0: int, crop_x0: int,
-                        crop_h: int, crop_w: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[Tuple[Tuple[int, int], Tuple[int, int]]]]:
+                        crop_h: int, crop_w: int, scale_factor: float = 1.0) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List]:
         """
         Rasterize graph to junction map, offset map, offset mask, and edge list.
 
         Args:
             graph: Dict mapping (y,x) node coords to list of (y,x) neighbor coords
-            crop_y0, crop_x0: Top-left corner of crop in image coordinates
+            crop_y0, crop_x0: Top-left corner of crop in original image coordinates
             crop_h, crop_w: Height and width of crop in pixels
-
-        Returns:
-            junction_map: [1, h', w'] binary junction map (1 = junction present)
-            offset_map: [2, h', w'] offset from grid cell center to exact junction location
-            offset_mask: [1, h', w'] mask indicating which cells have junctions
-            edges: List of ((i1, j1), (i2, j2)) edge pairs in grid coordinates
-        """
-        h = crop_h // self.stride
-        w = crop_w // self.stride
-
-        junction_map = np.zeros((1, h, w), dtype=np.float32)
-        offset_map = np.zeros((2, h, w), dtype=np.float32)
-        offset_mask = np.zeros((1, h, w), dtype=np.float32)
-
-        # Map from original (y,x) coordinates to grid cell (i,j) coordinates
-        node_to_cell = {}
-
-        # Filter nodes that fall within the crop
-        for node_coord in graph.keys():
-            node_y, node_x = node_coord
-
-            # Check if node is within crop bounds
-            if not (crop_y0 <= node_y < crop_y0 + crop_h and
-                   crop_x0 <= node_x < crop_x0 + crop_w):
-                continue
-
-            # Convert to crop-relative coordinates
-            rel_y = node_y - crop_y0
-            rel_x = node_x - crop_x0
-
-            # Convert to grid cell coordinates
-            cell_y = int(rel_y // self.stride)
-            cell_x = int(rel_x // self.stride)
-
-            # Ensure within bounds (edge case handling)
-            if not (0 <= cell_y < h and 0 <= cell_x < w):
-                continue
-
-            # Store mapping from node to grid cell
-            node_to_cell[node_coord] = (cell_y, cell_x)
-
-            degree = len(graph[node_coord])
-
-            # Mark junction as present
-            junction_map[0, cell_y, cell_x] += degree**2  # accumulate degree if multiple nodes fall in same cell
-            offset_mask[0, cell_y, cell_x] = 1.0
-
-            # Calculate offset from cell center to exact node location
-            # Cell center in crop coordinates
-            cell_center_y = (cell_y + 0.5) * self.stride
-            cell_center_x = (cell_x + 0.5) * self.stride
-
-            # Offset in pixels
-            offset_y = rel_y - cell_center_y
-            offset_x = rel_x - cell_center_x
-
-            # Normalize to [-0.5, 0.5] range by dividing by stride
-            offset_map[0, cell_y, cell_x] += offset_y / self.stride * degree**2
-            offset_map[1, cell_y, cell_x] += offset_x / self.stride * degree**2
-
-        # Average offsets if multiple nodes fall in the same cell
-        offset_map /= np.maximum(junction_map, 1e-6)
-        junction_map = np.clip(junction_map, 0, 1)
-
-        # Extract edges between nodes that are both within the crop (skip if not needed)
-        edges = []
-        if not self.skip_edges:
-            for src_node, neighbors in graph.items():
-                if src_node not in node_to_cell:
-                    continue
-
-                src_cell = node_to_cell[src_node]
-
-                for dst_node in neighbors:
-                    if dst_node not in node_to_cell:
-                        continue
-
-                    dst_cell = node_to_cell[dst_node]
-                    edges.append((src_cell, dst_cell))
-
-        return junction_map, offset_map, offset_mask, edges
-
-    def __getitem__(self, i):
-        # Use preloaded data if available
-        if self.preloaded_data is not None:
-            data = self.preloaded_data[i]
-            img = data['image'].copy()  # Copy to avoid modifying cached data
-            graph = data['graph']
-            region_id = data['region_id']
-        else:
-            sample_info = self.samples[i]
-            # Load image
-            img = cv2.imread(sample_info['img_path'], cv2.IMREAD_COLOR)
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            # Load graph
-            graph = self._load_graph(sample_info['graph_path'])
-            region_id = sample_info['region_id']
-
-        H, W = img.shape[:2]
-
-        # Random crop for training, center crop for validation/test
-        if self.split == 'train' and self.aug:
-            y0 = 0 if H <= self.img_size else np.random.randint(0, H - self.img_size + 1)
-            x0 = 0 if W <= self.img_size else np.random.randint(0, W - self.img_size + 1)
-        else:
-            # Center crop
-            y0 = max(0, (H - self.img_size) // 2)
-            x0 = max(0, (W - self.img_size) // 2)
-
-        # Crop image
-        crop_h = min(self.img_size, H - y0)
-        crop_w = min(self.img_size, W - x0)
-        crop = img[y0:y0+crop_h, x0:x0+crop_w]
-
-        # Pad if necessary
-        if crop_h < self.img_size or crop_w < self.img_size:
-            padded = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
-            padded[:crop_h, :crop_w] = crop
-            crop = padded
-
-        # Rasterize graph within crop
-        junction_map, offset_map, offset_mask, edges = self._rasterize_graph(
-            graph, y0, x0, crop_h, crop_w
-        )
-
-        # Get grid dimensions
-        h = junction_map.shape[1]
-        w = junction_map.shape[2]
-
-        # Apply data augmentation if enabled
-        if self.split == 'train' and self.aug:
-            # Random horizontal flip
-            if np.random.rand() > 0.5:
-                crop = np.fliplr(crop).copy()
-                junction_map = np.flip(junction_map, axis=2).copy()
-                offset_map = np.flip(offset_map, axis=2).copy()
-                offset_map[1] = -offset_map[1]  # Flip x-offset sign
-                offset_mask = np.flip(offset_mask, axis=2).copy()
-
-                # Flip edge coordinates (j -> w-1-j) - only if edges were computed
-                if not self.skip_edges:
-                    edges = [((i1, w-1-j1), (i2, w-1-j2)) for (i1, j1), (i2, j2) in edges]
-
-            # Random vertical flip
-            if np.random.rand() > 0.5:
-                crop = np.flipud(crop).copy()
-                junction_map = np.flip(junction_map, axis=1).copy()
-                offset_map = np.flip(offset_map, axis=1).copy()
-                offset_map[0] = -offset_map[0]  # Flip y-offset sign
-                offset_mask = np.flip(offset_mask, axis=1).copy()
-
-                # Flip edge coordinates (i -> h-1-i) - only if edges were computed
-                if not self.skip_edges:
-                    edges = [((h-1-i1, j1), (h-1-i2, j2)) for (i1, j1), (i2, j2) in edges]
-
-        sample = {
-            'image': torch.from_numpy(crop).permute(2, 0, 1).float() / 255.0,
-            'junction_map': torch.from_numpy(junction_map),
-            'offset_map': torch.from_numpy(offset_map),
-            'offset_mask': torch.from_numpy(offset_mask),
-            'edges': edges,
-            'meta': {
-                'region_id': region_id,
-                'crop_y0': int(y0),
-                'crop_x0': int(x0)
-            }
-        }
-        return sample
-
-
-class GlobalScale(Dataset):
-    """
-    Dataset for Global-Scale Road Dataset from HuggingFace.
-
-    Expected structure:
-      data_root/
-        train/
-          1/
-            region_0_sat.png
-            region_0_refine_gt_graph.p
-            ...
-          2/
-            region_100_sat.png
-            region_100_refine_gt_graph.p
-            ...
-        validation/
-          1/
-            region_0_sat.png
-            region_0_refine_gt_graph.p
-            ...
-        in-domain-test/
-          1/
-            region_0_sat.png
-            region_0_refine_gt_graph.p
-            ...
-        out-of-domain/
-          1/
-            region_0_sat.png
-            region_0_refine_gt_graph.p
-            ...
-
-    The graph pickle files contain a dict mapping (y,x) node coordinates to lists of (y,x) neighbors.
-
-    Key differences from CityScale:
-    - Larger images: 2048×2048 pixels (vs 1024×1024)
-    - Higher GSD: 1.0 m/pixel
-    - More diverse regions: urban, rural, mountainous
-    - Nested directory structure (100 tiles per subfolder)
-
-    Example usage:
-        >>> from openserge.data.dataset import GlobalScale
-        >>> dataset = GlobalScale('Global-Scale', split='train')
-        >>> sample = dataset[0]
-        >>> print(sample['image'].shape)  # [3, 512, 512]
-        >>> print(sample['junction_map'].shape)  # [1, 16, 16]
-
-    Returns:
-        Sample dict with keys:
-            - 'image': [3, H, W] RGB image tensor, normalized to [0, 1]
-            - 'junction_map': [1, h, w] binary junction map (1 = junction present)
-            - 'offset_map': [2, h, w] offset from grid cell center to exact junction location
-            - 'offset_mask': [1, h, w] mask indicating which cells have junctions
-            - 'edges': List of ((i1, j1), (i2, j2)) tuples representing edges in grid coordinates
-            - 'meta': dict with 'region_id', 'crop_y0', 'crop_x0', 'subfolder'
-        where h = H // stride, w = W // stride, and (i, j) are grid indices
-    """
-    def __init__(self, data_root, split='train', img_size=512, stride=32, aug=True,
-                 preload=False, skip_edges=False, use_refined=True):
-        """
-        Args:
-            data_root: Path to Global-Scale dataset directory
-            split: 'train', 'validation', 'in-domain-test', or 'out-of-domain'
-            img_size: Size of image crops (default 512)
-            stride: Downsampling stride for junction/offset maps (default 32)
-            aug: Whether to apply augmentation (default True)
-            preload: Whether to preload all data into memory (default False)
-            skip_edges: Whether to skip edge extraction (default False)
-            use_refined: Whether to use refined graph (region_X_refine_gt_graph.p)
-                        or original (region_X_graph_gt.pickle) (default True)
-        """
-        self.root = data_root
-        self.split = split
-        self.img_size = img_size
-        self.stride = stride
-        self.aug = aug
-        self.preload = preload
-        self.skip_edges = skip_edges
-        self.use_refined = use_refined
-
-        # Map split names
-        split_dirs = {
-            'train': 'train',
-            'validation': 'validation',
-            'valid': 'validation',
-            'test': 'in-domain-test',
-            'in-domain-test': 'in-domain-test',
-            'out-of-domain': 'out-of-domain',
-            'ood': 'out-of-domain'
-        }
-
-        if split not in split_dirs:
-            raise ValueError(f"Invalid split '{split}'. Must be one of: {list(split_dirs.keys())}")
-
-        self.split_dir = split_dirs[split]
-        self.data_dir = os.path.join(data_root, self.split_dir)
-
-        # Discover all samples by scanning nested directory structure
-        self.samples = []
-
-        # Check if directory exists
-        if not os.path.exists(self.data_dir):
-            raise FileNotFoundError(f"Data directory not found: {self.data_dir}")
-
-        # Scan all subdirectories (1/, 2/, 3/, ...)
-        for subfolder in sorted(os.listdir(self.data_dir)):
-            subfolder_path = os.path.join(self.data_dir, subfolder)
-
-            if not os.path.isdir(subfolder_path):
-                continue
-
-            # Find all satellite images in this subfolder
-            for filename in sorted(os.listdir(subfolder_path)):
-                if not filename.endswith('_sat.png'):
-                    continue
-
-                # Extract region ID from filename (e.g., region_0_sat.png -> 0)
-                region_id = filename.replace('region_', '').replace('_sat.png', '')
-
-                img_path = os.path.join(subfolder_path, filename)
-
-                # Determine graph file path based on use_refined flag
-                if use_refined:
-                    graph_filename = f'region_{region_id}_refine_gt_graph.p'
-                else:
-                    graph_filename = f'region_{region_id}_graph_gt.pickle'
-
-                graph_path = os.path.join(subfolder_path, graph_filename)
-
-                # Only add if both image and graph exist
-                if os.path.exists(img_path) and os.path.exists(graph_path):
-                    self.samples.append({
-                        'region_id': region_id,
-                        'subfolder': subfolder,
-                        'img_path': img_path,
-                        'graph_path': graph_path
-                    })
-
-        if len(self.samples) == 0:
-            raise ValueError(f"No samples found in {self.data_dir}. Check directory structure.")
-
-        print(f"GlobalScale {split} split: Found {len(self.samples)} samples")
-
-        # Preload data into memory if requested
-        self.preloaded_data = None
-        if self.preload:
-            print(f"Preloading {len(self.samples)} samples into memory...")
-            self.preloaded_data = []
-            for sample_info in self.samples:
-                # Load image
-                img = cv2.imread(sample_info['img_path'], cv2.IMREAD_COLOR)
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-                # Load graph
-                graph = self._load_graph(sample_info['graph_path'])
-
-                self.preloaded_data.append({
-                    'region_id': sample_info['region_id'],
-                    'subfolder': sample_info['subfolder'],
-                    'image': img,
-                    'graph': graph
-                })
-            print(f"Preloading complete!")
-
-    def __len__(self):
-        return len(self.samples)
-
-    def _load_graph(self, graph_path: str) -> Dict[Tuple[int, int], List[Tuple[int, int]]]:
-        """Load graph from pickle file."""
-        with open(graph_path, 'rb') as f:
-            graph = pickle.load(f)
-        return graph
-
-    def _rasterize_graph(self, graph: Dict, crop_y0: int, crop_x0: int,
-                        crop_h: int, crop_w: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[Tuple[Tuple[int, int], Tuple[int, int]]]]:
-        """
-        Rasterize graph to junction map, offset map, offset mask, and edge list.
-
-        Uses the same format as CityScale for compatibility.
-
-        Args:
-            graph: Dict mapping (y,x) node coords to list of (y,x) neighbor coords
-            crop_y0, crop_x0: Top-left corner of crop in image coordinates
-            crop_h, crop_w: Height and width of crop in pixels
-
-        Returns:
-            junction_map: [1, h', w'] binary junction map (1 = junction present)
-            offset_map: [2, h', w'] offset from grid cell center to exact junction location
-            offset_mask: [1, h', w'] mask indicating which cells have junctions
-            edges: List of ((i1, j1), (i2, j2)) edge pairs in grid coordinates
-        """
-        h = crop_h // self.stride
-        w = crop_w // self.stride
-
-        junction_map = np.zeros((1, h, w), dtype=np.float32)
-        offset_map = np.zeros((2, h, w), dtype=np.float32)
-        offset_mask = np.zeros((1, h, w), dtype=np.float32)
-
-        # Map from original (y,x) coordinates to grid cell (i,j) coordinates
-        node_to_cell = {}
-
-        # Filter nodes that fall within the crop
-        for node_coord in graph.keys():
-            node_y, node_x = node_coord
-
-            # Check if node is within crop bounds
-            if not (crop_y0 <= node_y < crop_y0 + crop_h and
-                   crop_x0 <= node_x < crop_x0 + crop_w):
-                continue
-
-            # Convert to crop-relative coordinates
-            rel_y = node_y - crop_y0
-            rel_x = node_x - crop_x0
-
-            # Convert to grid cell coordinates
-            cell_y = int(rel_y // self.stride)
-            cell_x = int(rel_x // self.stride)
-
-            # Ensure within bounds (edge case handling)
-            if not (0 <= cell_y < h and 0 <= cell_x < w):
-                continue
-
-            # Store mapping from node to grid cell
-            node_to_cell[node_coord] = (cell_y, cell_x)
-
-            degree = len(graph[node_coord])
-
-            # Mark junction as present
-            junction_map[0, cell_y, cell_x] += degree**2  # accumulate degree if multiple nodes fall in same cell
-            offset_mask[0, cell_y, cell_x] = 1.0
-
-            # Calculate offset from cell center to exact node location
-            # Cell center in crop coordinates
-            cell_center_y = (cell_y + 0.5) * self.stride
-            cell_center_x = (cell_x + 0.5) * self.stride
-
-            # Offset in pixels
-            offset_y = rel_y - cell_center_y
-            offset_x = rel_x - cell_center_x
-
-            # Normalize to [-0.5, 0.5] range by dividing by stride
-            offset_map[0, cell_y, cell_x] += offset_y / self.stride * degree**2
-            offset_map[1, cell_y, cell_x] += offset_x / self.stride * degree**2
-
-        # Average offsets if multiple nodes fall in the same cell
-        offset_map /= np.maximum(junction_map, 1e-6)
-        junction_map = np.clip(junction_map, 0, 1)
-
-        # Extract edges between nodes that are both within the crop (skip if not needed)
-        edges = []
-        if not self.skip_edges:
-            for src_node, neighbors in graph.items():
-                if src_node not in node_to_cell:
-                    continue
-
-                src_cell = node_to_cell[src_node]
-
-                for dst_node in neighbors:
-                    if dst_node not in node_to_cell:
-                        continue
-
-                    dst_cell = node_to_cell[dst_node]
-                    edges.append((src_cell, dst_cell))
-
-        return junction_map, offset_map, offset_mask, edges
-
-    def __getitem__(self, i):
-        # Use preloaded data if available
-        if self.preloaded_data is not None:
-            data = self.preloaded_data[i]
-            img = data['image'].copy()  # Copy to avoid modifying cached data
-            graph = data['graph']
-            region_id = data['region_id']
-            subfolder = data['subfolder']
-        else:
-            sample_info = self.samples[i]
-            # Load image
-            img = cv2.imread(sample_info['img_path'], cv2.IMREAD_COLOR)
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            # Load graph
-            graph = self._load_graph(sample_info['graph_path'])
-            region_id = sample_info['region_id']
-            subfolder = sample_info['subfolder']
-
-        H, W = img.shape[:2]
-
-        # Random crop for training, center crop for validation/test
-        if self.split == 'train' and self.aug:
-            y0 = 0 if H <= self.img_size else np.random.randint(0, H - self.img_size + 1)
-            x0 = 0 if W <= self.img_size else np.random.randint(0, W - self.img_size + 1)
-        else:
-            # Center crop
-            y0 = max(0, (H - self.img_size) // 2)
-            x0 = max(0, (W - self.img_size) // 2)
-
-        # Crop image
-        crop_h = min(self.img_size, H - y0)
-        crop_w = min(self.img_size, W - x0)
-        crop = img[y0:y0+crop_h, x0:x0+crop_w]
-
-        # Pad if necessary
-        if crop_h < self.img_size or crop_w < self.img_size:
-            padded = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
-            padded[:crop_h, :crop_w] = crop
-            crop = padded
-
-        # Rasterize graph within crop
-        junction_map, offset_map, offset_mask, edges = self._rasterize_graph(
-            graph, y0, x0, crop_h, crop_w
-        )
-
-        # Get grid dimensions
-        h = junction_map.shape[1]
-        w = junction_map.shape[2]
-
-        # Apply data augmentation if enabled
-        if self.split == 'train' and self.aug:
-            # Random horizontal flip
-            if np.random.rand() > 0.5:
-                crop = np.fliplr(crop).copy()
-                junction_map = np.flip(junction_map, axis=2).copy()
-                offset_map = np.flip(offset_map, axis=2).copy()
-                offset_map[1] = -offset_map[1]  # Flip x-offset sign
-                offset_mask = np.flip(offset_mask, axis=2).copy()
-
-                # Flip edge coordinates (j -> w-1-j) - only if edges were computed
-                if not self.skip_edges:
-                    edges = [((i1, w-1-j1), (i2, w-1-j2)) for (i1, j1), (i2, j2) in edges]
-
-            # Random vertical flip
-            if np.random.rand() > 0.5:
-                crop = np.flipud(crop).copy()
-                junction_map = np.flip(junction_map, axis=1).copy()
-                offset_map = np.flip(offset_map, axis=1).copy()
-                offset_map[0] = -offset_map[0]  # Flip y-offset sign
-                offset_mask = np.flip(offset_mask, axis=1).copy()
-
-                # Flip edge coordinates (i -> h-1-i) - only if edges were computed
-                if not self.skip_edges:
-                    edges = [((h-1-i1, j1), (h-1-i2, j2)) for (i1, j1), (i2, j2) in edges]
-
-        sample = {
-            'image': torch.from_numpy(crop).permute(2, 0, 1).float() / 255.0,
-            'junction_map': torch.from_numpy(junction_map),
-            'offset_map': torch.from_numpy(offset_map),
-            'offset_mask': torch.from_numpy(offset_mask),
-            'edges': edges,
-            'meta': {
-                'region_id': region_id,
-                'subfolder': subfolder,
-                'crop_y0': int(y0),
-                'crop_x0': int(x0)
-            }
-        }
-        return sample
-
-
-class SpaceNet(Dataset):
-    """
-    Dataset for SpaceNet road graph extraction data.
-
-    Expected structure:
-      data_root/
-        AOI_2_Vegas_1001__rgb.png
-        AOI_2_Vegas_1001__gt_graph.p
-        AOI_2_Vegas_1001__gt_graph_dense.p
-        ...
-        dataset.json  (optional, contains train/validation/test splits)
-
-    The graph pickle files contain a dict mapping (y,x) node coordinates to lists of (y,x) neighbors.
-    Images are 400×400 pixels and will be resized to img_size (default 512).
-    Graph coordinates are scaled proportionally to match the resized image.
-
-    Key differences from CityScale/GlobalScale:
-    - Smaller original images: 400×400 pixels
-    - Resizing instead of cropping
-    - Dense graph option with ~2x more nodes
-    - Multiple cities: Vegas, Paris, Shanghai, Khartoum
-
-    Example usage:
-        >>> from openserge.data.dataset import SpaceNet
-        >>> dataset = SpaceNet('data/spacenet', split='train')
-        >>> sample = dataset[0]
-        >>> print(sample['image'].shape)  # [3, 512, 512]
-        >>> print(sample['junction_map'].shape)  # [1, 16, 16]
-
-    Returns:
-        Sample dict with keys:
-            - 'image': [3, H, W] RGB image tensor, normalized to [0, 1]
-            - 'junction_map': [1, h, w] binary junction map (1 = junction present)
-            - 'offset_map': [2, h, w] offset from grid cell center to exact junction location
-            - 'offset_mask': [1, h, w] mask indicating which cells have junctions
-            - 'edges': List of ((i1, j1), (i2, j2)) tuples representing edges in grid coordinates
-            - 'meta': dict with 'tile_id', 'original_size', 'scale_factor'
-        where h = H // stride, w = W // stride
-    """
-    def __init__(self, data_root, split='train', img_size=512, stride=32, aug=True,
-                 preload=False, skip_edges=False, use_dense=True, split_file=None):
-        """
-        Args:
-            data_root: Path to SpaceNet data directory
-            split: 'train', 'validation', 'valid', or 'test'
-            img_size: Target size for resized images (default 512)
-            stride: Downsampling stride for junction/offset maps (default 32)
-            aug: Whether to apply augmentation (default True)
-            preload: Whether to preload all data into memory (default False)
-            skip_edges: Whether to skip edge extraction (default False)
-            use_dense: Whether to use dense graphs (default True)
-            split_file: Path to dataset.json split file (default: {data_root}/dataset.json)
-        """
-        self.root = data_root
-        self.split = split
-        self.img_size = img_size
-        self.stride = stride
-        self.aug = aug
-        self.preload = preload
-        self.skip_edges = skip_edges
-        self.use_dense = use_dense
-
-        # Load split file
-        if split_file is None:
-            split_file = os.path.join(data_root, 'dataset.json')
-
-        if not os.path.exists(split_file):
-            raise FileNotFoundError(f"Split file not found: {split_file}")
-
-        with open(split_file, 'r') as f:
-            splits = json.load(f)
-
-        # Map split names (support both 'valid' and 'validation')
-        split_key = 'validation' if split in ['valid', 'validation'] else split
-
-        if split_key not in splits:
-            raise ValueError(f"Invalid split '{split}'. Available: {list(splits.keys())}")
-
-        self.tile_ids = splits[split_key]
-
-        # Build sample list
-        self.samples = []
-        graph_suffix = '_dense.p' if use_dense else '.p'
-
-        for tile_id in self.tile_ids:
-            img_path = os.path.join(data_root, f'{tile_id}__rgb.png')
-            graph_path = os.path.join(data_root, f'{tile_id}__gt_graph{graph_suffix}')
-
-            if os.path.exists(img_path) and os.path.exists(graph_path):
-                self.samples.append({
-                    'tile_id': tile_id,
-                    'img_path': img_path,
-                    'graph_path': graph_path
-                })
-
-        if len(self.samples) == 0:
-            raise ValueError(f"No samples found for split '{split}' in {data_root}")
-
-        print(f"SpaceNet {split} split: Found {len(self.samples)} samples (dense={use_dense})")
-
-        # Preload data into memory if requested
-        self.preloaded_data = None
-        if self.preload:
-            print(f"Preloading {len(self.samples)} samples into memory...")
-            self.preloaded_data = []
-            for sample_info in self.samples:
-                # Load image
-                img = cv2.imread(sample_info['img_path'], cv2.IMREAD_COLOR)
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-                # Load graph
-                graph = self._load_graph(sample_info['graph_path'])
-
-                self.preloaded_data.append({
-                    'tile_id': sample_info['tile_id'],
-                    'image': img,
-                    'graph': graph
-                })
-            print(f"Preloading complete!")
-
-    def __len__(self):
-        return len(self.samples)
-
-    def _load_graph(self, graph_path: str) -> Dict[Tuple[int, int], List[Tuple[int, int]]]:
-        """Load graph from pickle file."""
-        with open(graph_path, 'rb') as f:
-            graph = pickle.load(f)
-        return graph
-
-    def _rasterize_graph(self, graph: Dict, scale_factor: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[Tuple[Tuple[int, int], Tuple[int, int]]]]:
-        """
-        Rasterize graph to junction map, offset map, offset mask, and edge list.
-        Graph coordinates are scaled to match the resized image.
-
-        Args:
-            graph: Dict mapping (y,x) node coords to list of (y,x) neighbor coords (in original image space)
-            scale_factor: Scaling factor from original to target image size
+            scale_factor: Scaling factor applied to coordinates (default 1.0, no scaling)
 
         Returns:
             junction_map: [1, h, w] binary junction map
@@ -788,26 +120,34 @@ class SpaceNet(Dataset):
             offset_mask: [1, h, w] mask indicating which cells have junctions
             edges: List of ((i1, j1), (i2, j2)) edge pairs in grid coordinates
         """
-        h = self.img_size // self.stride
-        w = self.img_size // self.stride
+        h = crop_h // self.stride
+        w = crop_w // self.stride
 
         junction_map = np.zeros((1, h, w), dtype=np.float32)
         offset_map = np.zeros((2, h, w), dtype=np.float32)
         offset_mask = np.zeros((1, h, w), dtype=np.float32)
 
-        # Map from original (y,x) coordinates to grid cell (i,j) coordinates
         node_to_cell = {}
 
         for node_coord in graph.keys():
             node_y, node_x = node_coord
 
-            # Scale coordinates to resized image space
+            # Apply scaling if needed (for resized images)
             scaled_y = node_y * scale_factor
             scaled_x = node_x * scale_factor
 
+            # Check if node is within crop bounds
+            if not (crop_y0 <= scaled_y < crop_y0 + crop_h and
+                   crop_x0 <= scaled_x < crop_x0 + crop_w):
+                continue
+
+            # Convert to crop-relative coordinates
+            rel_y = scaled_y - crop_y0
+            rel_x = scaled_x - crop_x0
+
             # Convert to grid cell coordinates
-            cell_y = int(scaled_y // self.stride)
-            cell_x = int(scaled_x // self.stride)
+            cell_y = int(rel_y // self.stride)
+            cell_x = int(rel_x // self.stride)
 
             # Ensure within bounds
             if not (0 <= cell_y < h and 0 <= cell_x < w):
@@ -826,11 +166,10 @@ class SpaceNet(Dataset):
             cell_center_y = (cell_y + 0.5) * self.stride
             cell_center_x = (cell_x + 0.5) * self.stride
 
-            # Offset in scaled image space
-            offset_y = scaled_y - cell_center_y
-            offset_x = scaled_x - cell_center_x
+            offset_y = rel_y - cell_center_y
+            offset_x = rel_x - cell_center_x
 
-            # Normalize to [-0.5, 0.5] range by dividing by stride
+            # Normalize to [-0.5, 0.5] range
             offset_map[0, cell_y, cell_x] += offset_y / self.stride * degree**2
             offset_map[1, cell_y, cell_x] += offset_x / self.stride * degree**2
 
@@ -856,76 +195,357 @@ class SpaceNet(Dataset):
 
         return junction_map, offset_map, offset_mask, edges
 
+    def _apply_augmentation(self, img: np.ndarray, junction_map: np.ndarray,
+                           offset_map: np.ndarray, offset_mask: np.ndarray,
+                           edges: List) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List]:
+        """
+        Apply data augmentation (horizontal/vertical flips).
+
+        Returns:
+            Augmented versions of all inputs
+        """
+        h, w = junction_map.shape[1], junction_map.shape[2]
+
+        # Random horizontal flip
+        if np.random.rand() > 0.5:
+            img = np.fliplr(img).copy()
+            junction_map = np.flip(junction_map, axis=2).copy()
+            offset_map = np.flip(offset_map, axis=2).copy()
+            offset_map[1] = -offset_map[1]  # Flip x-offset sign
+            offset_mask = np.flip(offset_mask, axis=2).copy()
+
+            if not self.skip_edges:
+                edges = [((i1, w-1-j1), (i2, w-1-j2)) for (i1, j1), (i2, j2) in edges]
+
+        # Random vertical flip
+        if np.random.rand() > 0.5:
+            img = np.flipud(img).copy()
+            junction_map = np.flip(junction_map, axis=1).copy()
+            offset_map = np.flip(offset_map, axis=1).copy()
+            offset_map[0] = -offset_map[0]  # Flip y-offset sign
+            offset_mask = np.flip(offset_mask, axis=1).copy()
+
+            if not self.skip_edges:
+                edges = [((h-1-i1, j1), (h-1-i2, j2)) for (i1, j1), (i2, j2) in edges]
+
+        return img, junction_map, offset_map, offset_mask, edges
+
     def __getitem__(self, i):
+        """Get a sample from the dataset."""
         # Use preloaded data if available
         if self.preloaded_data is not None:
             data = self.preloaded_data[i]
             img = data['image'].copy()
             graph = data['graph']
-            tile_id = data['tile_id']
+            preprocessing_info = data['preprocessing_info']
+            sample_info = {k: v for k, v in data.items()
+                          if k not in ['image', 'graph', 'preprocessing_info']}
         else:
             sample_info = self.samples[i]
-            # Load image
-            img = cv2.imread(sample_info['img_path'], cv2.IMREAD_COLOR)
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            # Load graph
+            img, preprocessing_info = self._load_and_preprocess_image(sample_info)
             graph = self._load_graph(sample_info['graph_path'])
-            tile_id = sample_info['tile_id']
 
-        original_h, original_w = img.shape[:2]
+        # Rasterize graph
+        junction_map, offset_map, offset_mask, edges = self._rasterize_graph(
+            graph,
+            preprocessing_info.get('crop_y0', 0),
+            preprocessing_info.get('crop_x0', 0),
+            preprocessing_info.get('crop_h', img.shape[0]),
+            preprocessing_info.get('crop_w', img.shape[1]),
+            preprocessing_info.get('scale_factor', 1.0)
+        )
 
-        # Resize image to target size
-        img_resized = cv2.resize(img, (self.img_size, self.img_size), interpolation=cv2.INTER_LINEAR)
-
-        # Calculate scale factor for graph coordinates
-        scale_factor = self.img_size / original_w  # Assuming square images
-
-        # Rasterize graph with scaled coordinates
-        junction_map, offset_map, offset_mask, edges = self._rasterize_graph(graph, scale_factor)
-
-        # Get grid dimensions
-        h = junction_map.shape[1]
-        w = junction_map.shape[2]
-
-        # Apply data augmentation if enabled
+        # Apply augmentation if training
         if self.split == 'train' and self.aug:
-            # Random horizontal flip
-            if np.random.rand() > 0.5:
-                img_resized = np.fliplr(img_resized).copy()
-                junction_map = np.flip(junction_map, axis=2).copy()
-                offset_map = np.flip(offset_map, axis=2).copy()
-                offset_map[1] = -offset_map[1]  # Flip x-offset sign
-                offset_mask = np.flip(offset_mask, axis=2).copy()
+            img, junction_map, offset_map, offset_mask, edges = self._apply_augmentation(
+                img, junction_map, offset_map, offset_mask, edges
+            )
 
-                # Flip edge coordinates
-                if not self.skip_edges:
-                    edges = [((i1, w-1-j1), (i2, w-1-j2)) for (i1, j1), (i2, j2) in edges]
-
-            # Random vertical flip
-            if np.random.rand() > 0.5:
-                img_resized = np.flipud(img_resized).copy()
-                junction_map = np.flip(junction_map, axis=1).copy()
-                offset_map = np.flip(offset_map, axis=1).copy()
-                offset_map[0] = -offset_map[0]  # Flip y-offset sign
-                offset_mask = np.flip(offset_mask, axis=1).copy()
-
-                # Flip edge coordinates
-                if not self.skip_edges:
-                    edges = [((h-1-i1, j1), (h-1-i2, j2)) for (i1, j1), (i2, j2) in edges]
-
+        # Convert to tensors
         sample = {
-            'image': torch.from_numpy(img_resized).permute(2, 0, 1).float() / 255.0,
+            'image': torch.from_numpy(img).permute(2, 0, 1).float() / 255.0,
             'junction_map': torch.from_numpy(junction_map),
             'offset_map': torch.from_numpy(offset_map),
             'offset_mask': torch.from_numpy(offset_mask),
             'edges': edges,
-            'meta': {
-                'tile_id': tile_id,
-                'original_size': (original_h, original_w),
-                'scale_factor': float(scale_factor)
-            }
+            'meta': self._get_metadata(sample_info, preprocessing_info)
         }
+
         return sample
+
+
+class CityScale(RoadGraphDataset):
+    """
+    Dataset for Sat2Graph/CityScale data.
+
+    Expected structure:
+      data_root/
+        20cities/
+          region_0_sat.png
+          region_0_graph_gt.pickle
+          ...
+        data_split.json
+    """
+
+    def _discover_samples(self):
+        """Discover CityScale samples."""
+        split_path = os.path.join(self.root, 'data_split.json')
+        with open(split_path, 'r') as f:
+            splits = json.load(f)
+        region_ids = splits[self.split]
+
+        data_dir = os.path.join(self.root, '20cities')
+
+        for region_id in region_ids:
+            img_path = os.path.join(data_dir, f'region_{region_id}_sat.png')
+            graph_path = os.path.join(data_dir, f'region_{region_id}_graph_gt.pickle')
+
+            if os.path.exists(img_path) and os.path.exists(graph_path):
+                self.samples.append({
+                    'region_id': region_id,
+                    'img_path': img_path,
+                    'graph_path': graph_path
+                })
+
+    def _load_and_preprocess_image(self, sample_info: Dict) -> Tuple[np.ndarray, Dict]:
+        """Load image and apply random/center crop."""
+        img = cv2.imread(sample_info['img_path'], cv2.IMREAD_COLOR)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        H, W = img.shape[:2]
+
+        # Random crop for training, center crop otherwise
+        if self.split == 'train' and self.aug:
+            y0 = 0 if H <= self.img_size else np.random.randint(0, H - self.img_size + 1)
+            x0 = 0 if W <= self.img_size else np.random.randint(0, W - self.img_size + 1)
+        else:
+            y0 = max(0, (H - self.img_size) // 2)
+            x0 = max(0, (W - self.img_size) // 2)
+
+        crop_h = min(self.img_size, H - y0)
+        crop_w = min(self.img_size, W - x0)
+        crop = img[y0:y0+crop_h, x0:x0+crop_w]
+
+        # Pad if necessary
+        if crop_h < self.img_size or crop_w < self.img_size:
+            padded = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
+            padded[:crop_h, :crop_w] = crop
+            crop = padded
+
+        preprocessing_info = {
+            'crop_y0': y0,
+            'crop_x0': x0,
+            'crop_h': crop_h,
+            'crop_w': crop_w,
+            'scale_factor': 1.0
+        }
+
+        return crop, preprocessing_info
+
+    def _get_metadata(self, sample_info: Dict, preprocessing_info: Dict) -> Dict:
+        """Get CityScale-specific metadata."""
+        return {
+            'region_id': sample_info['region_id'],
+            'crop_y0': preprocessing_info['crop_y0'],
+            'crop_x0': preprocessing_info['crop_x0']
+        }
+
+
+class GlobalScale(RoadGraphDataset):
+    """
+    Dataset for Global-Scale Road Dataset from HuggingFace.
+
+    Expected structure:
+      data_root/
+        train/1/region_0_sat.png, region_0_refine_gt_graph.p, ...
+        validation/1/...
+        in-domain-test/1/...
+        out-of-domain/1/...
+    """
+
+    def __init__(self, data_root: str, split: str = 'train', img_size: int = 512,
+                 stride: int = 32, aug: bool = True, preload: bool = False,
+                 skip_edges: bool = False, use_refined: bool = True):
+        self.use_refined = use_refined
+        super().__init__(data_root, split, img_size, stride, aug, preload, skip_edges)
+
+    def _discover_samples(self):
+        """Discover GlobalScale samples."""
+        split_dirs = {
+            'train': 'train', 'validation': 'validation', 'valid': 'validation',
+            'test': 'in-domain-test', 'in-domain-test': 'in-domain-test',
+            'out-of-domain': 'out-of-domain', 'ood': 'out-of-domain'
+        }
+
+        if self.split not in split_dirs:
+            raise ValueError(f"Invalid split '{self.split}'. Must be one of: {list(split_dirs.keys())}")
+
+        split_dir = split_dirs[self.split]
+        data_dir = os.path.join(self.root, split_dir)
+
+        if not os.path.exists(data_dir):
+            raise FileNotFoundError(f"Data directory not found: {data_dir}")
+
+        for subfolder in sorted(os.listdir(data_dir)):
+            subfolder_path = os.path.join(data_dir, subfolder)
+            if not os.path.isdir(subfolder_path):
+                continue
+
+            for filename in sorted(os.listdir(subfolder_path)):
+                if not filename.endswith('_sat.png'):
+                    continue
+
+                region_id = filename.replace('region_', '').replace('_sat.png', '')
+                img_path = os.path.join(subfolder_path, filename)
+
+                graph_filename = (f'region_{region_id}_refine_gt_graph.p' if self.use_refined
+                                 else f'region_{region_id}_graph_gt.pickle')
+                graph_path = os.path.join(subfolder_path, graph_filename)
+
+                if os.path.exists(img_path) and os.path.exists(graph_path):
+                    self.samples.append({
+                        'region_id': region_id,
+                        'subfolder': subfolder,
+                        'img_path': img_path,
+                        'graph_path': graph_path
+                    })
+
+        if len(self.samples) == 0:
+            raise ValueError(f"No samples found in {data_dir}")
+
+        print(f"GlobalScale {self.split} split: Found {len(self.samples)} samples")
+
+    def _load_and_preprocess_image(self, sample_info: Dict) -> Tuple[np.ndarray, Dict]:
+        """Load image and apply random/center crop."""
+        img = cv2.imread(sample_info['img_path'], cv2.IMREAD_COLOR)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        H, W = img.shape[:2]
+
+        # Random crop for training, center crop otherwise
+        if self.split == 'train' and self.aug:
+            y0 = 0 if H <= self.img_size else np.random.randint(0, H - self.img_size + 1)
+            x0 = 0 if W <= self.img_size else np.random.randint(0, W - self.img_size + 1)
+        else:
+            y0 = max(0, (H - self.img_size) // 2)
+            x0 = max(0, (W - self.img_size) // 2)
+
+        crop_h = min(self.img_size, H - y0)
+        crop_w = min(self.img_size, W - x0)
+        crop = img[y0:y0+crop_h, x0:x0+crop_w]
+
+        # Pad if necessary
+        if crop_h < self.img_size or crop_w < self.img_size:
+            padded = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
+            padded[:crop_h, :crop_w] = crop
+            crop = padded
+
+        preprocessing_info = {
+            'crop_y0': y0,
+            'crop_x0': x0,
+            'crop_h': crop_h,
+            'crop_w': crop_w,
+            'scale_factor': 1.0
+        }
+
+        return crop, preprocessing_info
+
+    def _get_metadata(self, sample_info: Dict, preprocessing_info: Dict) -> Dict:
+        """Get GlobalScale-specific metadata."""
+        return {
+            'region_id': sample_info['region_id'],
+            'subfolder': sample_info['subfolder'],
+            'crop_y0': preprocessing_info['crop_y0'],
+            'crop_x0': preprocessing_info['crop_x0']
+        }
+
+
+class SpaceNet(RoadGraphDataset):
+    """
+    Dataset for SpaceNet road graph extraction data.
+
+    Expected structure:
+      data_root/
+        AOI_2_Vegas_1001__rgb.png
+        AOI_2_Vegas_1001__gt_graph.p
+        AOI_2_Vegas_1001__gt_graph_dense.p
+        ...
+        dataset.json
+    """
+
+    def __init__(self, data_root: str, split: str = 'train', img_size: int = 512,
+                 stride: int = 32, aug: bool = True, preload: bool = False,
+                 skip_edges: bool = False, use_dense: bool = True,
+                 split_file: Optional[str] = None):
+        self.use_dense = use_dense
+        self.split_file = split_file or os.path.join(data_root, 'dataset.json')
+        super().__init__(data_root, split, img_size, stride, aug, preload, skip_edges)
+
+    def _discover_samples(self):
+        """Discover SpaceNet samples."""
+        if not os.path.exists(self.split_file):
+            raise FileNotFoundError(f"Split file not found: {self.split_file}")
+
+        with open(self.split_file, 'r') as f:
+            splits = json.load(f)
+
+        # Map split names
+        split_key = 'validation' if self.split in ['valid', 'validation'] else self.split
+
+        if split_key not in splits:
+            raise ValueError(f"Invalid split '{self.split}'. Available: {list(splits.keys())}")
+
+        tile_ids = splits[split_key]
+        graph_suffix = '_dense.p' if self.use_dense else '.p'
+
+        for tile_id in tile_ids:
+            img_path = os.path.join(self.root, f'{tile_id}__rgb.png')
+            graph_path = os.path.join(self.root, f'{tile_id}__gt_graph{graph_suffix}')
+
+            if os.path.exists(img_path) and os.path.exists(graph_path):
+                self.samples.append({
+                    'tile_id': tile_id,
+                    'img_path': img_path,
+                    'graph_path': graph_path
+                })
+
+        if len(self.samples) == 0:
+            raise ValueError(f"No samples found for split '{self.split}' in {self.root}")
+
+        print(f"SpaceNet {self.split} split: Found {len(self.samples)} samples (dense={self.use_dense})")
+
+    def _load_and_preprocess_image(self, sample_info: Dict) -> Tuple[np.ndarray, Dict]:
+        """Load image and resize to target size."""
+        img = cv2.imread(sample_info['img_path'], cv2.IMREAD_COLOR)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        original_h, original_w = img.shape[:2]
+
+        # Resize to target size
+        img_resized = cv2.resize(img, (self.img_size, self.img_size),
+                                interpolation=cv2.INTER_LINEAR)
+
+        # Calculate scale factor for graph coordinates
+        scale_factor = self.img_size / original_w
+
+        preprocessing_info = {
+            'crop_y0': 0,
+            'crop_x0': 0,
+            'crop_h': self.img_size,
+            'crop_w': self.img_size,
+            'scale_factor': scale_factor,
+            'original_size': (original_h, original_w)
+        }
+
+        return img_resized, preprocessing_info
+
+    def _get_metadata(self, sample_info: Dict, preprocessing_info: Dict) -> Dict:
+        """Get SpaceNet-specific metadata."""
+        return {
+            'tile_id': sample_info['tile_id'],
+            'original_size': preprocessing_info['original_size'],
+            'scale_factor': preprocessing_info['scale_factor']
+        }
 
 
 if __name__ == '__main__':

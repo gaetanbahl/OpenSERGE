@@ -146,21 +146,55 @@ class Backbone(nn.Module):
 
         if use_fpn:
             # Create feature extractor with multi-scale outputs
-            # out_indices=(0,1,2,3) gives us 4 feature levels at strides [4, 8, 16, 32]
+            # We need the last 4 feature levels at strides [4, 8, 16, 32]
+            # First create with default indices to see how many levels the model has
+            temp_model = timm.create_model(
+                name,
+                pretrained=pretrained,
+                features_only=True
+            )
+
+            # Get all available feature reductions
+            all_reductions = temp_model.feature_info.reduction()
+
+            # Select indices for strides [4, 8, 16, 32]
+            # For most CNNs these are the last 4 features
+            # For ResNets: [2, 4, 8, 16, 32] → we want indices (1, 2, 3, 4)
+            # For EfficientNets: [2, 4, 8, 16, 32] → we want indices (1, 2, 3, 4)
+            target_strides = [4, 8, 16, 32]
+            out_indices = []
+
+            for stride in target_strides:
+                if stride in all_reductions:
+                    out_indices.append(all_reductions.index(stride))
+                else:
+                    # If exact stride not found, try to find closest
+                    # This shouldn't happen for standard models
+                    raise ValueError(
+                        f"Model {name} doesn't have feature at stride {stride}. "
+                        f"Available strides: {all_reductions}"
+                    )
+
+            # Now create model with correct indices
             self.model = timm.create_model(
                 name,
                 pretrained=pretrained,
                 features_only=True,
-                out_indices=(0, 1, 2, 3)
+                out_indices=tuple(out_indices)
             )
 
             # Get feature channel information from the model
             fpn_channels = self.model.feature_info.channels()
+            feature_strides = self.model.feature_info.reduction()
 
-            # Verify we got 4 feature levels
+            # Verify we got 4 feature levels at correct strides
             if len(fpn_channels) != 4:
                 raise ValueError(f"Model {name} returned {len(fpn_channels)} features, expected 4. "
                                f"Channels: {fpn_channels}")
+
+            if feature_strides != target_strides:
+                raise ValueError(f"Model {name} feature strides {feature_strides} don't match "
+                               f"expected {target_strides}")
 
             # Create FPN to aggregate multi-scale features
             self.fpn = FPN(fpn_channels, out_channels=256)

@@ -19,7 +19,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import wandb
 
-from .data.dataset import CityScale, GlobalScale
+from .data.dataset import CityScale, GlobalScale, SpaceNet
 from .models.wrapper import OpenSERGE
 from .models.losses import openserge_losses
 from .utils.graph import collate_fn, create_edge_labels_from_model
@@ -387,7 +387,19 @@ def main():
     # Dataset selection
     dataset_type = config.get('dataset', 'cityscale')
     preload = config.get('preload', False)
-    DatasetClass = GlobalScale if dataset_type == 'globalscale' else CityScale
+
+    if dataset_type == 'globalscale':
+        DatasetClass = GlobalScale
+        dataset_kwargs = {'use_refined': config.get('use_refined', True)}
+    elif dataset_type == 'spacenet':
+        DatasetClass = SpaceNet
+        dataset_kwargs = {
+            'use_dense': config.get('use_dense', True),
+            'split_file': config.get('split_file', None)
+        }
+    else:  # cityscale
+        DatasetClass = CityScale
+        dataset_kwargs = {}
 
     # Create model
     logger.info("Creating model...")
@@ -417,10 +429,10 @@ def main():
     logger.info("Loading datasets (skip_edges=True)...")
     train_dataset_s1 = DatasetClass(config['data_root'], split='train',
                                     img_size=config.get('img_size', 512), aug=True,
-                                    preload=preload, skip_edges=True)
+                                    preload=preload, skip_edges=True, **dataset_kwargs)
     val_dataset_s1 = DatasetClass(config['data_root'], split='valid',
                                   img_size=config.get('img_size', 512), aug=False,
-                                  preload=preload, skip_edges=True)
+                                  preload=preload, skip_edges=True, **dataset_kwargs)
 
     train_loader_s1 = DataLoader(
         train_dataset_s1, batch_size=config.get('batch_size', 8), shuffle=True,
@@ -484,10 +496,10 @@ def main():
     logger.info("Loading datasets (with edges)...")
     train_dataset_s2 = DatasetClass(config['data_root'], split='train',
                                     img_size=config.get('img_size', 512), aug=True,
-                                    preload=preload, skip_edges=False)
+                                    preload=preload, skip_edges=False, **dataset_kwargs)
     val_dataset_s2 = DatasetClass(config['data_root'], split='valid',
                                   img_size=config.get('img_size', 512), aug=False,
-                                  preload=preload, skip_edges=False)
+                                  preload=preload, skip_edges=False, **dataset_kwargs)
 
     train_loader_s2 = DataLoader(
         train_dataset_s2, batch_size=config.get('batch_size', 8), shuffle=True,

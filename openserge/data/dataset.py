@@ -390,16 +390,19 @@ class GlobalScale(RoadGraphDataset):
 
     def __init__(self, data_root: str, split: str = 'train', img_size: int = 512,
                  stride: int = 32, aug: bool = True, preload: bool = False,
-                 skip_edges: bool = False, use_refined: bool = True):
+                 skip_edges: bool = False, use_refined: bool = True,
+                 normalize_mean: Tuple[float, float, float] = None,
+                 normalize_std: Tuple[float, float, float] = None):
         self.use_refined = use_refined
-        super().__init__(data_root, split, img_size, stride, aug, preload, skip_edges)
+        super().__init__(data_root, split, img_size, stride, aug, preload, skip_edges,
+                        normalize_mean, normalize_std)
 
     def _discover_samples(self):
         """Discover GlobalScale samples."""
         split_dirs = {
-            'train': 'train', 'validation': 'validation', 'valid': 'validation',
+            'train': 'train', 'validation': 'val', 'valid': 'val',
             'test': 'in-domain-test', 'in-domain-test': 'in-domain-test',
-            'out-of-domain': 'out-of-domain', 'ood': 'out-of-domain'
+            'out-of-domain': 'out_of_domain', 'ood': 'out_of_domain'
         }
 
         if self.split not in split_dirs:
@@ -505,10 +508,13 @@ class SpaceNet(RoadGraphDataset):
     def __init__(self, data_root: str, split: str = 'train', img_size: int = 512,
                  stride: int = 32, aug: bool = True, preload: bool = False,
                  skip_edges: bool = False, use_dense: bool = True,
-                 split_file: Optional[str] = None):
+                 split_file: Optional[str] = None,
+                 normalize_mean: Tuple[float, float, float] = None,
+                 normalize_std: Tuple[float, float, float] = None):
         self.use_dense = use_dense
         self.split_file = split_file or os.path.join(data_root, 'dataset.json')
-        super().__init__(data_root, split, img_size, stride, aug, preload, skip_edges)
+        super().__init__(data_root, split, img_size, stride, aug, preload, skip_edges,
+                        normalize_mean, normalize_std)
 
     def _discover_samples(self):
         """Discover SpaceNet samples."""

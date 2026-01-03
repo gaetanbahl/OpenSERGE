@@ -534,10 +534,37 @@ class SpaceNet(RoadGraphDataset):
             'crop_h': self.img_size,
             'crop_w': self.img_size,
             'scale_factor': scale_factor,
-            'original_size': (original_h, original_w)
+            'original_size': (original_h, original_w),
+            'flip_y_height': original_h  # For flipping Y coordinates
         }
 
         return img_resized, preprocessing_info
+
+    def _load_graph(self, graph_path: str) -> Dict:
+        """Load graph and flip Y coordinates (SpaceNet uses bottom-left origin)."""
+        with open(graph_path, 'rb') as f:
+            graph = pickle.load(f)
+
+        # Get the image height for this sample to flip Y coordinates
+        # We need to determine the original image height
+        # Extract tile_id from graph_path to get corresponding image
+        tile_id = os.path.basename(graph_path).split('__gt_graph')[0]
+        img_path = os.path.join(os.path.dirname(graph_path), f'{tile_id}__rgb.png')
+
+        # Read image to get height
+        img = cv2.imread(img_path, cv2.IMREAD_COLOR)
+        if img is None:
+            raise FileNotFoundError(f"Could not load image: {img_path}")
+        img_height = img.shape[0]
+
+        # Flip Y coordinates: new_y = img_height - old_y
+        flipped_graph = {}
+        for (y, x), neighbors in graph.items():
+            flipped_y = img_height - y
+            flipped_neighbors = [(img_height - ny, nx) for ny, nx in neighbors]
+            flipped_graph[(flipped_y, x)] = flipped_neighbors
+
+        return flipped_graph
 
     def _get_metadata(self, sample_info: Dict, preprocessing_info: Dict) -> Dict:
         """Get SpaceNet-specific metadata."""

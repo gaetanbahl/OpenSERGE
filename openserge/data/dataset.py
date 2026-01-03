@@ -80,22 +80,24 @@ class RoadGraphDataset(Dataset):
         return graph
 
     def _preload_all_data(self):
-        """Preload all samples into memory."""
+        """Preload all raw images and graphs into memory (before preprocessing)."""
         print(f"Preloading {len(self.samples)} samples into memory...")
         self.preloaded_data = []
 
         for sample_info in self.samples:
-            # Load and preprocess image
-            img, preprocessing_info = self._load_and_preprocess_image(sample_info)
+            # Load raw image (no preprocessing - just cv2.imread)
+            raw_img = cv2.imread(sample_info['img_path'], cv2.IMREAD_COLOR)
+            if raw_img is None:
+                raise ValueError(f"Failed to load image: {sample_info['img_path']}")
+            raw_img = cv2.cvtColor(raw_img, cv2.COLOR_BGR2RGB)
 
             # Load graph
             graph = self._load_graph(sample_info['graph_path'])
 
-            # Store with preprocessing info for later use
+            # Store raw data - preprocessing will be done in __getitem__
             preloaded_item = {
-                'image': img,
-                'graph': graph,
-                'preprocessing_info': preprocessing_info
+                'raw_image': raw_img,  # Store raw, not preprocessed
+                'graph': graph
             }
             preloaded_item.update(sample_info)  # Include original sample info
 
@@ -232,15 +234,21 @@ class RoadGraphDataset(Dataset):
 
     def __getitem__(self, i):
         """Get a sample from the dataset."""
-        # Use preloaded data if available
+        # Get sample info and load data
         if self.preloaded_data is not None:
+            # Use preloaded raw data
             data = self.preloaded_data[i]
-            img = data['image'].copy()
-            graph = data['graph']
-            preprocessing_info = data['preprocessing_info']
             sample_info = {k: v for k, v in data.items()
-                          if k not in ['image', 'graph', 'preprocessing_info']}
+                          if k not in ['raw_image', 'graph']}
+            graph = data['graph']
+
+            # Apply preprocessing to raw image (cropping/resizing happens here)
+            # We pass the raw image through a modified sample_info dict
+            temp_sample_info = sample_info.copy()
+            temp_sample_info['_raw_image'] = data['raw_image']  # Pass raw image
+            img, preprocessing_info = self._load_and_preprocess_image(temp_sample_info)
         else:
+            # Load from disk
             sample_info = self.samples[i]
             img, preprocessing_info = self._load_and_preprocess_image(sample_info)
             graph = self._load_graph(sample_info['graph_path'])
@@ -309,8 +317,12 @@ class CityScale(RoadGraphDataset):
 
     def _load_and_preprocess_image(self, sample_info: Dict) -> Tuple[np.ndarray, Dict]:
         """Load image and apply random/center crop."""
-        img = cv2.imread(sample_info['img_path'], cv2.IMREAD_COLOR)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # Use preloaded raw image if available, otherwise load from disk
+        if "_raw_image" in sample_info:
+            img = sample_info["_raw_image"].copy()  # Copy to avoid modifying cached data
+        else:
+            img = cv2.imread(sample_info["img_path"], cv2.IMREAD_COLOR)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         H, W = img.shape[:2]
 
@@ -417,8 +429,12 @@ class GlobalScale(RoadGraphDataset):
 
     def _load_and_preprocess_image(self, sample_info: Dict) -> Tuple[np.ndarray, Dict]:
         """Load image and apply random/center crop."""
-        img = cv2.imread(sample_info['img_path'], cv2.IMREAD_COLOR)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # Use preloaded raw image if available, otherwise load from disk
+        if "_raw_image" in sample_info:
+            img = sample_info["_raw_image"].copy()  # Copy to avoid modifying cached data
+        else:
+            img = cv2.imread(sample_info["img_path"], cv2.IMREAD_COLOR)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         H, W = img.shape[:2]
 
@@ -516,8 +532,12 @@ class SpaceNet(RoadGraphDataset):
 
     def _load_and_preprocess_image(self, sample_info: Dict) -> Tuple[np.ndarray, Dict]:
         """Load image and resize to target size."""
-        img = cv2.imread(sample_info['img_path'], cv2.IMREAD_COLOR)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # Use preloaded raw image if available, otherwise load from disk
+        if "_raw_image" in sample_info:
+            img = sample_info["_raw_image"].copy()  # Copy to avoid modifying cached data
+        else:
+            img = cv2.imread(sample_info["img_path"], cv2.IMREAD_COLOR)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         original_h, original_w = img.shape[:2]
 

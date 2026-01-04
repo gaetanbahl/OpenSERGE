@@ -133,13 +133,15 @@ class Backbone(nn.Module):
     """
     Feature extraction backbone using timm library.
 
-    Supports any timm model with automatic pretrained weight loading.
-    Uses features_only=True for FPN compatibility (multi-scale features).
+    Supports CNNs (ResNet, EfficientNet, etc.) and Vision Transformers.
+    - CNNs: Uses features_only=True for FPN compatibility (multi-scale features)
+    - ViTs: Reshapes patch tokens to spatial feature map (no FPN support)
     """
     def __init__(self, name: str = 'resnet50', use_fpn: bool = False):
         super().__init__()
         self.name = name
         self.use_fpn = use_fpn
+        self.is_vit = 'vit' in name.lower()
 
         # Validate model exists and check if pretrained weights are available
         pretrained = self._check_pretrained_available(name)
@@ -147,6 +149,9 @@ class Backbone(nn.Module):
         # Store normalization parameters for later use
         self.normalize_mean = None
         self.normalize_std = None
+
+        if self.is_vit and use_fpn:
+            raise ValueError("FPN is not supported with Vision Transformers. Set use_fpn=False.")
 
         if use_fpn:
             # Create feature extractor with multi-scale outputs
@@ -206,27 +211,86 @@ class Backbone(nn.Module):
 
         else:
             # Create single-scale feature extractor (last layer only)
-            self.model = timm.create_model(
-                name,
-                pretrained=pretrained,
-                num_classes=0,  # Remove classifier
-                global_pool=''  # Remove global pooling
-            )
+            # For ViT, enable dynamic image size to support 512x512 inputs
+            model_kwargs = {
+                'pretrained': pretrained,
+                'num_classes': 0,  # Remove classifier
+                'global_pool': ''  # Remove global pooling
+            }
 
-            # Get output channels
-            # For models with feature_info, use it; otherwise infer from model
-            if hasattr(self.model, 'num_features'):
-                self.c_out = self.model.num_features
-            elif hasattr(self.model, 'feature_info'):
-                self.c_out = self.model.feature_info.channels()[-1]
+            # Enable dynamic image size for Vision Transformers
+            if self.is_vit:
+                model_kwargs['dynamic_img_size'] = True
+
+            self.model = timm.create_model(name, **model_kwargs)
+
+            if self.is_vit:
+                # Vision Transformer handling
+                # ViT outputs [B, num_patches, embed_dim] where num_patches = (H/patch_size) * (W/patch_size)
+                # We need to reshape to [B, embed_dim, H/patch_size, W/patch_size]
+
+                # Get patch size and embed_dim from model
+                if hasattr(self.model, 'patch_embed'):
+                    self.patch_size = self.model.patch_embed.patch_size[0]
+                    self.embed_dim = self.model.embed_dim
+                else:
+                    # Fallback for different ViT implementations
+                    raise ValueError(f"Could not determine patch_size for ViT model {name}")
+
+                # For 512x512 input with patch_size=16, we get 32x32 patches (stride 16)
+                # We want stride 32, so we need to downsample by 2x
+                # Add a conv layer to go from stride 16 -> stride 32
+                self.vit_stride = self.patch_size  # e.g., 16 for patch16 models
+
+                if self.vit_stride == 16:
+                    # Downsample 2x to get stride 32
+                    self.vit_projection = nn.Sequential(
+                        nn.Conv2d(self.embed_dim, 256, kernel_size=3, stride=2, padding=1),
+                        nn.BatchNorm2d(256),
+                        nn.ReLU(inplace=True)
+                    )
+                    self.c_out = 256
+                    self.stride = 32
+                elif self.vit_stride == 32:
+                    # Already at stride 32, just project channels
+                    self.vit_projection = nn.Conv2d(self.embed_dim, 256, kernel_size=1)
+                    self.c_out = 256
+                    self.stride = 32
+                elif self.vit_stride == 14:
+                    # DINOv2 models with patch14
+                    # 512/14 ≈ 36.57, so we get ~37x37 patches
+                    # Downsample to get closer to stride 32
+                    self.vit_projection = nn.Sequential(
+                        nn.Conv2d(self.embed_dim, 256, kernel_size=3, stride=1, padding=1),
+                        nn.BatchNorm2d(256),
+                        nn.ReLU(inplace=True)
+                    )
+                    self.c_out = 256
+                    self.stride = self.vit_stride  # Keep original stride
+                else:
+                    # Generic case: just project channels
+                    self.vit_projection = nn.Conv2d(self.embed_dim, 256, kernel_size=1)
+                    self.c_out = 256
+                    self.stride = self.vit_stride
+
+                print(f"ViT backbone: patch_size={self.patch_size}, embed_dim={self.embed_dim}, "
+                      f"output_stride={self.stride}, output_channels={self.c_out}")
             else:
-                # Fallback: run a dummy forward pass to get output shape
-                with torch.no_grad():
-                    dummy_input = torch.randn(1, 3, 224, 224)
-                    dummy_output = self.model(dummy_input)
-                    self.c_out = dummy_output.shape[1]
+                # CNN handling
+                # Get output channels
+                # For models with feature_info, use it; otherwise infer from model
+                if hasattr(self.model, 'num_features'):
+                    self.c_out = self.model.num_features
+                elif hasattr(self.model, 'feature_info'):
+                    self.c_out = self.model.feature_info.channels()[-1]
+                else:
+                    # Fallback: run a dummy forward pass to get output shape
+                    with torch.no_grad():
+                        dummy_input = torch.randn(1, 3, 224, 224)
+                        dummy_output = self.model(dummy_input)
+                        self.c_out = dummy_output.shape[1]
 
-        self.stride = 32  # Output is always at stride 32
+                self.stride = 32  # Output is always at stride 32 for CNNs
 
         # Extract normalization parameters from pretrained_cfg
         if hasattr(self.model, 'pretrained_cfg') and self.model.pretrained_cfg:
@@ -300,8 +364,10 @@ class Backbone(nn.Module):
             x: Input tensor [B, 3, H, W]
 
         Returns:
-            Feature map [B, C, H/32, W/32]
+            Feature map [B, C, H/stride, W/stride]
         """
+        B, _, H, W = x.shape
+
         if self.use_fpn:
             # Get multi-scale features
             features = self.model(x)  # List of [B, C_i, H_i, W_i]
@@ -316,7 +382,50 @@ class Backbone(nn.Module):
             # Single-scale forward pass
             x = self.model(x)
 
-        return x  # [B, C, H/32, W/32]
+            if self.is_vit:
+                # ViT outputs [B, num_patches+1, embed_dim] or [B, num_patches, embed_dim]
+                # The +1 is for the [CLS] token which we need to remove
+
+                if x.dim() == 3:
+                    # [B, N, C] format (sequence of patches)
+                    # Some models have CLS token, register tokens, or other prefix/suffix tokens
+                    num_patches = (H // self.patch_size) * (W // self.patch_size)
+                    N = x.shape[1]
+
+                    if N == num_patches:
+                        # No extra tokens
+                        pass
+                    elif N == num_patches + 1:
+                        # Has 1 extra token (CLS), remove it
+                        x = x[:, 1:, :]  # [B, num_patches, C]
+                    elif N > num_patches:
+                        # Has multiple extra tokens (CLS + registers, etc.)
+                        # Assume extra tokens are at the beginning, take last num_patches
+                        num_extra = N - num_patches
+                        x = x[:, num_extra:, :]  # [B, num_patches, C]
+                        print(f"Note: ViT has {num_extra} extra tokens (CLS/registers), removing them")
+                    else:
+                        # Fewer patches than expected
+                        raise RuntimeError(
+                            f"Expected at least {num_patches} patches, "
+                            f"got {N} for input {H}x{W} with patch_size={self.patch_size}"
+                        )
+
+                    # Reshape from [B, num_patches, C] to [B, C, H_p, W_p]
+                    h_p = H // self.patch_size
+                    w_p = W // self.patch_size
+                    x = x.transpose(1, 2).reshape(B, self.embed_dim, h_p, w_p)
+
+                elif x.dim() == 4:
+                    # Already in [B, C, H, W] format (some ViT variants)
+                    pass
+                else:
+                    raise RuntimeError(f"Unexpected ViT output shape: {x.shape}")
+
+                # Apply projection layer to get to desired stride and channels
+                x = self.vit_projection(x)
+
+        return x  # [B, C, H/stride, W/stride]
 
 class SingleShotRoadGraphNet(nn.Module):
     """Backbone + 3-branch head as in the paper."""

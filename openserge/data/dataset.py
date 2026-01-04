@@ -614,10 +614,313 @@ class SpaceNet(RoadGraphDataset):
         }
 
 
+class RoadTracer(RoadGraphDataset):
+    """
+    Dataset for RoadTracer road graph extraction data.
+
+    Expected structure:
+      data_root/
+        data/
+          imagery/
+            {city}_{x}_{y}_sat.png
+            ...
+          train_graphs_img.json
+
+    The train_graphs_img.json file contains a list of samples with:
+      - name: Image filename (e.g., "chicago_-1_0_sat.png")
+      - points: List of [x, y] node coordinates
+      - edges: List of [i, j] edge index pairs
+    """
+
+    def __init__(self, data_root: str, split: str = 'train', img_size: int = 512,
+                 stride: int = 32, aug: bool = True, preload: bool = False,
+                 skip_edges: bool = False, val_percent: float = 0.15,
+                 normalize_mean: Tuple[float, float, float] = None,
+                 normalize_std: Tuple[float, float, float] = None):
+        """
+        Args:
+            val_percent: Percentage of training cities to use for validation (default 0.15 = 15%)
+                        Only used when split='train' or 'valid'/'validation'
+        """
+        # Test cities from README.md (15 cities)
+        self.test_cities = {
+            'amsterdam', 'boston', 'chicago', 'denver', 'kansas city', 'la',
+            'montreal', 'new york', 'paris', 'pittsburgh', 'saltlakecity',
+            'san diego', 'tokyo', 'toronto', 'vancouver'
+        }
+        self.val_percent = val_percent
+        super().__init__(data_root, split, img_size, stride, aug, preload, skip_edges,
+                        normalize_mean, normalize_std)
+
+    def _parse_city_from_filename(self, filename: str) -> str:
+        """Extract city name from filename like 'chicago_-1_0_sat.png'."""
+        # Remove .png extension
+        name = filename.replace('.png', '').replace('_sat', '')
+        parts = name.split('_')
+
+        # Handle multi-word cities
+        if parts[0] in ['new', 'kansas', 'san']:
+            return parts[0] + ' ' + parts[1]
+        else:
+            return parts[0]
+
+    def _discover_samples(self):
+        """Discover RoadTracer samples from train_graphs_img.json with train/val split."""
+        json_path = os.path.join(self.root, 'data', 'train_graphs_img.json')
+
+        if not os.path.exists(json_path):
+            raise FileNotFoundError(f"RoadTracer JSON file not found: {json_path}")
+
+        with open(json_path, 'r') as f:
+            all_samples = json.load(f)
+
+        # First, collect all training cities (non-test cities)
+        all_train_cities = set()
+        for sample_data in all_samples:
+            filename = sample_data['name']
+            city = self._parse_city_from_filename(filename)
+            if city not in self.test_cities:
+                all_train_cities.add(city)
+
+        # Sort cities for deterministic split
+        sorted_train_cities = sorted(list(all_train_cities))
+
+        # Split training cities into train and validation
+        num_val_cities = max(1, int(len(sorted_train_cities) * self.val_percent))
+        val_cities = set(sorted_train_cities[:num_val_cities])
+        train_cities = set(sorted_train_cities[num_val_cities:])
+
+        # Filter samples by split
+        for sample_data in all_samples:
+            filename = sample_data['name']
+            city = self._parse_city_from_filename(filename)
+
+            # Determine which split this sample belongs to
+            if self.split == 'test':
+                # Test split: use predefined test cities
+                if city not in self.test_cities:
+                    continue
+            elif self.split in ['valid', 'validation']:
+                # Validation split: use val_percent of training cities
+                if city not in val_cities:
+                    continue
+            elif self.split == 'train':
+                # Train split: remaining training cities
+                if city not in train_cities:
+                    continue
+            else:
+                raise ValueError(f"Invalid split: {self.split}")
+
+            img_path = os.path.join(self.root, 'data', 'imagery', filename)
+
+            if os.path.exists(img_path):
+                self.samples.append({
+                    'filename': filename,
+                    'city': city,
+                    'img_path': img_path,
+                    'graph_path': None,  # RoadTracer doesn't use graph files, data is in JSON
+                    'points': sample_data['points'],
+                    'edge_indices': sample_data.get('edges', [])
+                })
+
+        if len(self.samples) == 0:
+            raise ValueError(f"No samples found for split '{self.split}' in {self.root}")
+
+        # Print split information
+        cities_in_split = set([s['city'] for s in self.samples])
+        print(f"RoadTracer {self.split} split: Found {len(self.samples)} samples from {len(cities_in_split)} cities")
+        if self.split in ['train', 'valid', 'validation']:
+            print(f"  Cities: {sorted(cities_in_split)}")
+
+    def _convert_to_adjacency_dict(self, points: List[List[float]],
+                                   edge_indices: List[List[int]]) -> Dict[Tuple[float, float], List[Tuple[float, float]]]:
+        """
+        Convert points and edge indices to adjacency dict format.
+
+        Args:
+            points: List of [x, y] coordinates
+            edge_indices: List of [i, j] edge pairs (node indices)
+
+        Returns:
+            Adjacency dict: {(y, x): [(y1, x1), (y2, x2), ...]}
+        """
+        # Build adjacency dict
+        adj_dict = {}
+
+        # Initialize all nodes
+        for x, y in points:
+            node_key = (y, x)  # Use (y, x) format as in other datasets
+            if node_key not in adj_dict:
+                adj_dict[node_key] = []
+
+        # Add edges
+        for i, j in edge_indices:
+            if i >= len(points) or j >= len(points):
+                continue  # Skip invalid indices
+
+            xi, yi = points[i]
+            xj, yj = points[j]
+
+            node_i = (yi, xi)
+            node_j = (yj, xj)
+
+            # Add edge (note: edges in JSON might be directional, so add both directions)
+            if node_j not in adj_dict[node_i]:
+                adj_dict[node_i].append(node_j)
+
+        return adj_dict
+
+    def __getitem__(self, i):
+        """
+        Get a sample from the dataset.
+        Override base class to handle RoadTracer's in-memory graph format.
+        """
+        # Get sample info and load data
+        if self.preloaded_data is not None:
+            # Use preloaded raw data
+            data = self.preloaded_data[i]
+            sample_info = {k: v for k, v in data.items()
+                          if k not in ['raw_image', 'graph']}
+            graph = data['graph']
+
+            # Apply preprocessing to raw image
+            temp_sample_info = sample_info.copy()
+            temp_sample_info['_raw_image'] = data['raw_image']
+            img, preprocessing_info = self._load_and_preprocess_image(temp_sample_info)
+        else:
+            # Load from disk
+            sample_info = self.samples[i]
+            img, preprocessing_info = self._load_and_preprocess_image(sample_info)
+
+            # Load graph from embedded JSON data (not from pickle file)
+            graph = self._convert_to_adjacency_dict(
+                sample_info['points'],
+                sample_info['edge_indices']
+            )
+
+        # Rasterize graph
+        junction_map, offset_map, offset_mask, edges = self._rasterize_graph(
+            graph,
+            preprocessing_info.get('crop_y0', 0),
+            preprocessing_info.get('crop_x0', 0),
+            preprocessing_info.get('crop_h', img.shape[0]),
+            preprocessing_info.get('crop_w', img.shape[1]),
+            preprocessing_info.get('scale_factor', 1.0)
+        )
+
+        # Apply augmentation if training
+        if self.split == 'train' and self.aug:
+            img, junction_map, offset_map, offset_mask, edges = self._apply_augmentation(
+                img, junction_map, offset_map, offset_mask, edges
+            )
+
+        # Convert to tensors and normalize
+        img_tensor = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
+
+        # Apply normalization if specified
+        if self.normalize_mean is not None and self.normalize_std is not None:
+            mean = torch.tensor(self.normalize_mean).view(3, 1, 1)
+            std = torch.tensor(self.normalize_std).view(3, 1, 1)
+            img_tensor = (img_tensor - mean) / std
+
+        sample = {
+            'image': img_tensor,
+            'junction_map': torch.from_numpy(junction_map),
+            'offset_map': torch.from_numpy(offset_map),
+            'offset_mask': torch.from_numpy(offset_mask),
+            'edges': edges,
+            'meta': self._get_metadata(sample_info, preprocessing_info)
+        }
+
+        return sample
+
+    def _load_and_preprocess_image(self, sample_info: Dict) -> Tuple[np.ndarray, Dict]:
+        """Load image and apply random/center crop (same as CityScale)."""
+        # Use preloaded raw image if available, otherwise load from disk
+        if "_raw_image" in sample_info:
+            img = sample_info["_raw_image"].copy()  # Copy to avoid modifying cached data
+        else:
+            img = cv2.imread(sample_info["img_path"], cv2.IMREAD_COLOR)
+            if img is None:
+                raise FileNotFoundError(f"Could not load image: {sample_info['img_path']}")
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        H, W = img.shape[:2]
+
+        # Random crop for training, center crop otherwise
+        if self.split == 'train' and self.aug:
+            y0 = 0 if H <= self.img_size else np.random.randint(0, H - self.img_size + 1)
+            x0 = 0 if W <= self.img_size else np.random.randint(0, W - self.img_size + 1)
+        else:
+            y0 = max(0, (H - self.img_size) // 2)
+            x0 = max(0, (W - self.img_size) // 2)
+
+        crop_h = min(self.img_size, H - y0)
+        crop_w = min(self.img_size, W - x0)
+        crop = img[y0:y0+crop_h, x0:x0+crop_w]
+
+        # Pad if necessary
+        if crop_h < self.img_size or crop_w < self.img_size:
+            padded = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
+            padded[:crop_h, :crop_w] = crop
+            crop = padded
+
+        preprocessing_info = {
+            'crop_y0': y0,
+            'crop_x0': x0,
+            'crop_h': crop_h,
+            'crop_w': crop_w,
+            'scale_factor': 1.0
+        }
+
+        return crop, preprocessing_info
+
+    def _get_metadata(self, sample_info: Dict, preprocessing_info: Dict) -> Dict:
+        """Get RoadTracer-specific metadata."""
+        return {
+            'filename': sample_info['filename'],
+            'city': sample_info['city'],
+            'crop_y0': preprocessing_info['crop_y0'],
+            'crop_x0': preprocessing_info['crop_x0']
+        }
+
+    def _preload_all_data(self):
+        """
+        Preload all raw images and graphs into memory.
+        Override base class to handle RoadTracer's in-memory graph format.
+        """
+        print(f"Preloading {len(self.samples)} samples into memory...")
+        self.preloaded_data = []
+
+        for sample_info in self.samples:
+            # Load raw image
+            raw_img = cv2.imread(sample_info['img_path'], cv2.IMREAD_COLOR)
+            if raw_img is None:
+                raise ValueError(f"Failed to load image: {sample_info['img_path']}")
+            raw_img = cv2.cvtColor(raw_img, cv2.COLOR_BGR2RGB)
+
+            # Convert graph (points/edges already in sample_info)
+            graph = self._convert_to_adjacency_dict(
+                sample_info['points'],
+                sample_info['edge_indices']
+            )
+
+            # Store raw data
+            preloaded_item = {
+                'raw_image': raw_img,
+                'graph': graph
+            }
+            preloaded_item.update(sample_info)
+
+            self.preloaded_data.append(preloaded_item)
+
+        print(f"Preloading complete!")
+
+
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         print("Usage: python -m openserge.data.dataset <data_root> [dataset_type]")
-        print("  dataset_type: 'cityscale', 'globalscale', or 'spacenet' (default: cityscale)")
+        print("  dataset_type: 'cityscale', 'globalscale', 'spacenet', or 'roadtracer' (default: cityscale)")
         sys.exit(1)
 
     data_root = sys.argv[1]
@@ -629,6 +932,8 @@ if __name__ == '__main__':
         dataset = GlobalScale(data_root=data_root, split='train')
     elif dataset_type == 'spacenet':
         dataset = SpaceNet(data_root=data_root, split='train')
+    elif dataset_type == 'roadtracer':
+        dataset = RoadTracer(data_root=data_root, split='train')
     else:
         raise ValueError(f"Unknown dataset type: {dataset_type}")
 

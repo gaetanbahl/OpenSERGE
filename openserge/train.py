@@ -19,7 +19,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import wandb
 
-from .data.dataset import CityScale, GlobalScale, SpaceNet
+from .data.dataset import CityScale, GlobalScale, SpaceNet, RoadTracer
 from .models.wrapper import OpenSERGE
 from .models.losses import openserge_losses
 from .utils.graph import collate_fn, create_edge_labels_from_model
@@ -397,6 +397,9 @@ def main():
             'use_dense': config.get('use_dense', True),
             'split_file': config.get('split_file', None)
         }
+    elif dataset_type == 'roadtracer':
+        DatasetClass = RoadTracer
+        dataset_kwargs = {'val_percent': config.get('val_percent', 0.15)}
     else:  # cityscale
         DatasetClass = CityScale
         dataset_kwargs = {}

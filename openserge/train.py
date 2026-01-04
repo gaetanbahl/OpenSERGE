@@ -429,6 +429,20 @@ def main():
     logger.info("STAGE 1: Training Junction Detection (CNN only)")
     logger.info("="*70)
 
+    # Freeze/unfreeze backbone based on config
+    freeze_backbone_s1 = config.get('freeze_backbone_stage1', False)
+    if freeze_backbone_s1:
+        logger.info("Freezing backbone (feature extractor) for stage 1...")
+        for param in model.ss.backbone.parameters():
+            param.requires_grad = False
+    else:
+        logger.info("Backbone (feature extractor) trainable for stage 1")
+        for param in model.ss.backbone.parameters():
+            param.requires_grad = True
+
+    num_trainable_s1 = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"Trainable parameters in stage 1: {num_trainable_s1:,}")
+
     # Create datasets for stage 1 (skip edges for faster training)
     logger.info("Loading datasets (skip_edges=True)...")
     train_dataset_s1 = DatasetClass(config['data_root'], split='train',
@@ -489,16 +503,28 @@ def main():
     )
 
     # =========================================================================
-    # STAGE 2: GNN Training (CNN frozen)
+    # STAGE 2: GNN Training (CNN frozen by default)
     # =========================================================================
     logger.info("\n" + "="*70)
-    logger.info("STAGE 2: Training GNN (CNN frozen)")
+    logger.info("STAGE 2: Training GNN")
     logger.info("="*70)
 
-    # Freeze CNN weights
+    # Freeze CNN weights (this is the default for stage 2)
     logger.info("Freezing CNN weights...")
     for param in model.ss.parameters():
         param.requires_grad = False
+
+    # Freeze/unfreeze backbone based on config
+    freeze_backbone_s2 = config.get('freeze_backbone_stage2', True)  # Default True for stage 2
+    if freeze_backbone_s2:
+        logger.info("Backbone (feature extractor) frozen for stage 2")
+        for param in model.ss.backbone.parameters():
+            param.requires_grad = False
+    else:
+        logger.info("Unfreezing backbone (feature extractor) for stage 2...")
+        for param in model.ss.backbone.parameters():
+            param.requires_grad = True
+
     num_trainable_s2 = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Trainable parameters in stage 2: {num_trainable_s2:,}")
 
@@ -563,13 +589,26 @@ def main():
     # STAGE 3: Full Model Fine-tuning (reduced LR)
     # =========================================================================
     logger.info("\n" + "="*70)
-    logger.info("STAGE 3: Fine-tuning Full Model (all parameters)")
+    logger.info("STAGE 3: Fine-tuning Full Model")
     logger.info("="*70)
 
     # Unfreeze all parameters
     logger.info("Unfreezing all parameters...")
     for param in model.parameters():
         param.requires_grad = True
+
+    # Freeze/unfreeze backbone based on config
+    freeze_backbone_s3 = config.get('freeze_backbone_stage3', False)  # Default False for stage 3
+    if freeze_backbone_s3:
+        logger.info("Freezing backbone (feature extractor) for stage 3...")
+        for param in model.ss.backbone.parameters():
+            param.requires_grad = False
+    else:
+        logger.info("Backbone (feature extractor) trainable for stage 3")
+        # Already unfrozen above, but make explicit
+        for param in model.ss.backbone.parameters():
+            param.requires_grad = True
+
     num_trainable_s3 = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Trainable parameters in stage 3: {num_trainable_s3:,}")
 

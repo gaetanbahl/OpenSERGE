@@ -208,6 +208,7 @@ class Backbone(nn.Module):
             # Create FPN to aggregate multi-scale features
             self.fpn = FPN(fpn_channels, out_channels=256)
             self.c_out = 256
+            self.stride = 32  # FPN outputs features at stride 32
 
         else:
             # Create single-scale feature extractor (last layer only)

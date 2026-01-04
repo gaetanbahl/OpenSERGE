@@ -403,7 +403,6 @@ class Backbone(nn.Module):
                         # Assume extra tokens are at the beginning, take last num_patches
                         num_extra = N - num_patches
                         x = x[:, num_extra:, :]  # [B, num_patches, C]
-                        print(f"Note: ViT has {num_extra} extra tokens (CLS/registers), removing them")
                     else:
                         # Fewer patches than expected
                         raise RuntimeError(

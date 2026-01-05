@@ -22,6 +22,10 @@
   "freeze_backbone_stage2": true,
   "freeze_backbone_stage3": false,
 
+  "use_gt_junctions_stage1": false,
+  "use_gt_junctions_stage2": true,
+  "use_gt_junctions_stage3": false,
+
   "batch_size": 4,
   "lr": 0.001,
   "weight_decay": 0.0001,

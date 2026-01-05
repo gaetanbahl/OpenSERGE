@@ -23,7 +23,8 @@ class OpenSERGE(nn.Module):
         """Get normalization std from backbone's pretrained config."""
         return self.ss.backbone.normalize_std
 
-    def forward(self, images, j_thr=0.5, e_thr=0.5, max_nodes=2000):
+    def forward(self, images, j_thr=0.5, e_thr=0.5, max_nodes=2000,
+                use_gt_junctions=False, gt_junction_map=None, gt_offset_map=None):
         # Step 1: CNN
         out = self.ss(images)
         j_logits = out['junction_logits']  # [B,1,h,w]
@@ -34,20 +35,39 @@ class OpenSERGE(nn.Module):
         B, _, h, w = j_logits.shape
         results = []
         for b in range(B):
-            j_log = j_logits[b,0]
-            j_prob = torch.sigmoid(j_log)
-            mask = j_prob > j_thr
-            if mask.sum() == 0:
-                results.append({'nodes': torch.empty((0,2), device=images.device), 'edges': torch.empty((0,2), dtype=torch.long, device=images.device)})
-                continue
-            idx = mask.nonzero(as_tuple=False)  # [N,2] (y,x)
-            if idx.size(0) > max_nodes:
-                # keep top-K by prob
-                vals = j_prob[idx[:,0], idx[:,1]]
-                topk = torch.topk(vals, max_nodes).indices
-                idx = idx[topk]
-            y_off = offs[b,0][idx[:,0], idx[:,1]]  # Channel 0 = y-offset
-            x_off = offs[b,1][idx[:,0], idx[:,1]]  # Channel 1 = x-offset
+            # Conditional junction extraction: GT or predicted
+            if use_gt_junctions and gt_junction_map is not None and gt_offset_map is not None:
+                # Extract junctions from ground truth
+                j_map = gt_junction_map[b, 0]
+                mask = j_map > 0.5
+                if mask.sum() == 0:
+                    results.append({'nodes': torch.empty((0,2), device=images.device), 'edges': torch.empty((0,2), dtype=torch.long, device=images.device)})
+                    continue
+                idx = mask.nonzero(as_tuple=False)  # [N,2] (i,j) grid coords
+                if idx.size(0) > max_nodes:
+                    # Prioritize junctions by GT heatmap values
+                    vals = j_map[idx[:,0], idx[:,1]]
+                    topk = torch.topk(vals, max_nodes).indices
+                    idx = idx[topk]
+                # Use GT offsets
+                y_off = gt_offset_map[b, 0][idx[:,0], idx[:,1]]  # Channel 0 = y-offset
+                x_off = gt_offset_map[b, 1][idx[:,0], idx[:,1]]  # Channel 1 = x-offset
+            else:
+                # Extract junctions from predictions (original logic)
+                j_log = j_logits[b,0]
+                j_prob = torch.sigmoid(j_log)
+                mask = j_prob > j_thr
+                if mask.sum() == 0:
+                    results.append({'nodes': torch.empty((0,2), device=images.device), 'edges': torch.empty((0,2), dtype=torch.long, device=images.device)})
+                    continue
+                idx = mask.nonzero(as_tuple=False)  # [N,2] (y,x)
+                if idx.size(0) > max_nodes:
+                    # keep top-K by prob
+                    vals = j_prob[idx[:,0], idx[:,1]]
+                    topk = torch.topk(vals, max_nodes).indices
+                    idx = idx[topk]
+                y_off = offs[b,0][idx[:,0], idx[:,1]]  # Channel 0 = y-offset
+                x_off = offs[b,1][idx[:,0], idx[:,1]]  # Channel 1 = x-offset
             # Map to image coords
             x = (idx[:,1].float() + 0.5 + x_off) * stride
             y = (idx[:,0].float() + 0.5 + y_off) * stride

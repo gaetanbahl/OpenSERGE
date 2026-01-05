@@ -43,8 +43,17 @@ def train_epoch(model, dataloader, optimizer, device, config, writer, epoch, sta
         offset_map = batch['offset_map'].to(device)
         offset_mask = batch['offset_mask'].to(device)
 
+        # Determine if we should use GT junctions based on current stage
+        use_gt_junctions = config.get(f'use_gt_junctions_stage{stage_num}', False)
+
         # Forward pass
-        out = model(images, j_thr=config['junction_thresh'])
+        if use_gt_junctions:
+            out = model(images, j_thr=config['junction_thresh'],
+                       use_gt_junctions=True,
+                       gt_junction_map=junction_map,
+                       gt_offset_map=offset_map)
+        else:
+            out = model(images, j_thr=config['junction_thresh'])
 
         # Create edge labels aligned with model's predicted graph
         edge_labels = create_edge_labels_from_model(
@@ -482,6 +491,7 @@ def main():
     stage1_config['loss_weight_junction'] = config.get('loss_weight_junction', 1.0)
     stage1_config['loss_weight_offset'] = config.get('loss_weight_offset', 10.0)
     stage1_config['loss_weight_edge'] = 0.0
+    stage1_config['use_gt_junctions_stage1'] = config.get('use_gt_junctions_stage1', False)
 
     optimizer_s1 = torch.optim.Adam(
         model.parameters(),
@@ -511,11 +521,6 @@ def main():
     logger.info("\n" + "="*70)
     logger.info("STAGE 2: Training GNN")
     logger.info("="*70)
-
-    # Freeze CNN weights (this is the default for stage 2)
-    logger.info("Freezing CNN weights...")
-    for param in model.ss.parameters():
-        param.requires_grad = False
 
     # Freeze/unfreeze backbone based on config
     freeze_backbone_s2 = config.get('freeze_backbone_stage2', True)  # Default True for stage 2
@@ -559,11 +564,14 @@ def main():
         prefetch_factor=2 if config.get('num_workers', 4) > 0 else None
     )
 
-    # Configure loss weights for stage 2 (edge only)
+    # Configure loss weights for stage 2 (all losses active)
+    # Note: Junction and offset losses remain active even when using GT junctions
+    # to continue training the CNN while the GNN learns on a reliable graph structure
     stage2_config = config.copy()
-    stage2_config['loss_weight_junction'] = 0.0
-    stage2_config['loss_weight_offset'] = 0.0
+    stage2_config['loss_weight_junction'] = config.get('loss_weight_junction', 1.0)
+    stage2_config['loss_weight_offset'] = config.get('loss_weight_offset', 10.0)
     stage2_config['loss_weight_edge'] = config.get('loss_weight_edge', 1.0)
+    stage2_config['use_gt_junctions_stage2'] = config.get('use_gt_junctions_stage2', True)  # Default: True
 
     trainable_params_s2 = [p for p in model.parameters() if p.requires_grad]
     optimizer_s2 = torch.optim.Adam(
@@ -620,6 +628,7 @@ def main():
     stage3_config['loss_weight_junction'] = config.get('loss_weight_junction', 1.0)
     stage3_config['loss_weight_offset'] = config.get('loss_weight_offset', 10.0)
     stage3_config['loss_weight_edge'] = config.get('loss_weight_edge', 1.0)
+    stage3_config['use_gt_junctions_stage3'] = config.get('use_gt_junctions_stage3', False)
 
     # Reduced learning rate for stage 3
     stage3_lr = config.get('lr', 0.001) * config.get('stage3_lr_factor', 0.3)

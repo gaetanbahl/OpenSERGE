@@ -64,6 +64,14 @@ def parse_args():
     ap.add_argument('--stage3_patience', type=int, default=10,
                     help='Early stopping patience for stage 3 (full model fine-tuning)')
 
+    # Ground truth junction usage
+    ap.add_argument('--use_gt_junctions_stage1', action='store_true',
+                    help='Use ground truth junctions for stage 1 GNN training')
+    ap.add_argument('--use_gt_junctions_stage2', action='store_true',
+                    help='Use ground truth junctions for stage 2 GNN training (recommended)')
+    ap.add_argument('--use_gt_junctions_stage3', action='store_true',
+                    help='Use ground truth junctions for stage 3 fine-tuning')
+
     # Loss weights
     ap.add_argument('--loss_weight_junction', type=float, default=1.0,
                     help='Weight for junction loss')

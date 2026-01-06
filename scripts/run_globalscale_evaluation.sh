@@ -49,7 +49,7 @@ echo "========================================"
 run_inference() {
     local region_file=$1
     local region_path=$(echo "$region_file" | sed "s|^$DATA_ROOT/||")
-    local region_name=$(echo "$region_path" | sed 's|/|_|g' | sed 's/_sat\.png$//')
+    local region_name=$(echo "$region_path" | sed 's|/|__|g' | sed 's/__sat\.png$//')
 
     echo "[Inference] Processing $region_name..."
 
@@ -77,7 +77,7 @@ run_inference() {
 # Function to compute TOPO metrics for a single region
 compute_topo() {
     local region_name=$1
-    local region_path=$(echo "$region_name" | sed 's/_/\//g')
+    local region_path=$(echo "$region_name" | sed 's/__/\//g')
     local gt_graph="$DATA_ROOT/${region_path}_refine_gt_graph.p"
     local pred_graph="$OUTPUT_ROOT/graphs/graph_${region_name}.p"
     local output_file="$OUTPUT_ROOT/metrics/topo/topo_${region_name}.txt"
@@ -107,7 +107,7 @@ compute_topo() {
 # Function to compute APLS metrics for a single region
 compute_apls() {
     local region_name=$1
-    local region_path=$(echo "$region_name" | sed 's/_/\//g')
+    local region_path=$(echo "$region_name" | sed 's/__/\//g')
     local gt_graph="$DATA_ROOT/${region_path}_refine_gt_graph.p"
     local pred_graph="$OUTPUT_ROOT/graphs/graph_${region_name}.p"
 

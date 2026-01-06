@@ -48,15 +48,11 @@ echo "========================================"
 # Function to run inference on a single region
 run_inference() {
     local region_file=$1
-    # Extract path relative to DATA_ROOT and create unique identifier
+    # Create unique region name by replacing / with __ in the path
     # Example: data/Global-Scale/out_of_domain/1/region_90_sat.png
-    #   -> region_path: out_of_domain/1/region_90_sat.png
-    #   -> dir_part: out_of_domain/1  ->  out_of_domain__1
-    #   -> file_part: region_90
-    local region_path=$(echo "$region_file" | sed "s|^$DATA_ROOT/||")
-    local dir_part=$(dirname "$region_path" | sed 's|/|__|g')
-    local file_part=$(basename "$region_path" _sat.png)
-    local region_name="${dir_part}__${file_part}"
+    #   -> out_of_domain/1/region_90_sat.png -> out_of_domain__1__region_90
+    local region_path=$(echo "$region_file" | sed "s|^$DATA_ROOT/||" | sed 's/_sat\.png$//')
+    local region_name=$(echo "$region_path" | sed 's|/|__|g')
 
     echo "[Inference] Processing $region_name..."
 
@@ -84,14 +80,9 @@ run_inference() {
 # Function to compute TOPO metrics for a single region
 compute_topo() {
     local region_name=$1
-    # Reconstruct the original path from region_name
-    # Example: out_of_domain__1__region_90
-    #   -> Extract last component: region_90
-    #   -> Extract directory: out_of_domain__1 -> out_of_domain/1
-    #   -> Reconstruct: out_of_domain/1/region_90
-    local file_part=$(echo "$region_name" | sed 's/.*__\(region_[0-9]*\)$/\1/')
-    local dir_part=$(echo "$region_name" | sed "s/__${file_part}$//" | sed 's/__/\//g')
-    local region_path="${dir_part}/${file_part}"
+    # Reconstruct the original path: just replace __ with /
+    # Example: out_of_domain__1__region_90 -> out_of_domain/1/region_90
+    local region_path=$(echo "$region_name" | sed 's|__|/|g')
 
     local gt_graph="$DATA_ROOT/${region_path}_refine_gt_graph.p"
     local pred_graph="$OUTPUT_ROOT/graphs/graph_${region_name}.p"
@@ -123,10 +114,8 @@ compute_topo() {
 # Function to compute APLS metrics for a single region
 compute_apls() {
     local region_name=$1
-    # Reconstruct the original path from region_name (same logic as compute_topo)
-    local file_part=$(echo "$region_name" | sed 's/.*__\(region_[0-9]*\)$/\1/')
-    local dir_part=$(echo "$region_name" | sed "s/__${file_part}$//" | sed 's/__/\//g')
-    local region_path="${dir_part}/${file_part}"
+    # Reconstruct the original path: just replace __ with /
+    local region_path=$(echo "$region_name" | sed 's|__|/|g')
 
     local gt_graph="$DATA_ROOT/${region_path}_refine_gt_graph.p"
     local pred_graph="$OUTPUT_ROOT/graphs/graph_${region_name}.p"

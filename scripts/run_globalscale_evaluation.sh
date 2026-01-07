@@ -101,11 +101,16 @@ compute_topo() {
 
     echo "[TOPO] Computing TOPO for $region_name..."
 
+    # Convert to absolute paths to avoid issues with relative path handling
+    local gt_graph_abs=$(cd $(dirname "$gt_graph") && pwd)/$(basename "$gt_graph")
+    local pred_graph_abs=$(cd $(dirname "$pred_graph") && pwd)/$(basename "$pred_graph")
+    local output_file_abs=$(cd $(dirname "$output_file") && pwd)/$(basename "$output_file")
+
     cd metrics/topo
     python main.py \
-        -graph_gt "../../$gt_graph" \
-        -graph_prop "../../$pred_graph" \
-        -output "../../$output_file" 2>&1 | tee "../../$OUTPUT_ROOT/logs/topo_${region_name}.log"
+        -graph_gt "$gt_graph_abs" \
+        -graph_prop "$pred_graph_abs" \
+        -output "$output_file_abs" 2>&1 | tee "$OUTPUT_ROOT/logs/topo_${region_name}.log"
     cd ../../
 
     echo "[TOPO] $region_name complete."
@@ -133,17 +138,24 @@ compute_apls() {
 
     echo "[APLS] Computing APLS for $region_name..."
 
+    # Convert to absolute paths
+    local gt_graph_abs=$(cd $(dirname "$gt_graph") && pwd)/$(basename "$gt_graph")
+    local pred_graph_abs=$(cd $(dirname "$pred_graph") && pwd)/$(basename "$pred_graph")
+    local gt_json_abs=$(cd "$OUTPUT_ROOT/metrics/apls" && pwd)/${region_name}_gt.json
+    local pred_json_abs=$(cd "$OUTPUT_ROOT/metrics/apls" && pwd)/${region_name}_pred.json
+    local apls_output_abs=$(cd "$OUTPUT_ROOT/metrics/apls" && pwd)/apls_${region_name}.txt
+
     cd metrics/apls
 
     # Convert to JSON format
-    python convert.py "../../$gt_graph" "../../$OUTPUT_ROOT/metrics/apls/${region_name}_gt.json" 2>&1
-    python convert.py "../../$pred_graph" "../../$OUTPUT_ROOT/metrics/apls/${region_name}_pred.json" 2>&1
+    python convert.py "$gt_graph_abs" "$gt_json_abs" 2>&1
+    python convert.py "$pred_graph_abs" "$pred_json_abs" 2>&1
 
     # Run APLS
     go run main.go \
-        "../../$OUTPUT_ROOT/metrics/apls/${region_name}_gt.json" \
-        "../../$OUTPUT_ROOT/metrics/apls/${region_name}_pred.json" \
-        "../../$OUTPUT_ROOT/metrics/apls/apls_${region_name}.txt" 2>&1 | tee "../../$OUTPUT_ROOT/logs/apls_${region_name}.log"
+        "$gt_json_abs" \
+        "$pred_json_abs" \
+        "$apls_output_abs" 2>&1 | tee "$OUTPUT_ROOT/logs/apls_${region_name}.log"
 
     cd ../../
 

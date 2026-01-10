@@ -3,6 +3,8 @@
   "dataset": "globalscale",
   "data_root": "data/Global-Scale/",
   "img_size": 512,
+  "source_gsd": 1.0,
+  "target_gsd": 1.0,
   "preload": false,
   "use_refined": true,
 

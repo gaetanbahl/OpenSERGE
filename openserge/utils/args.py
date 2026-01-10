@@ -16,6 +16,10 @@ def parse_args():
                     help='Path to dataset root directory')
     ap.add_argument('--img_size', type=int, default=512,
                     help='Input image size')
+    ap.add_argument('--source_gsd', type=float, default=None,
+                    help='Source GSD in meters/pixel (e.g., 1.0 for CityScale, 0.6 for RoadTracer, 0.3 for SpaceNet)')
+    ap.add_argument('--target_gsd', type=float, default=None,
+                    help='Target GSD in meters/pixel (resample to this GSD before training)')
     ap.add_argument('--preload', action='store_true',
                     help='Preload entire dataset into memory for faster training')
 

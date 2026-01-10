@@ -462,12 +462,16 @@ def main():
                                     preload=preload, skip_edges=True,
                                     normalize_mean=config.get('normalize_mean'),
                                     normalize_std=config.get('normalize_std'),
+                                    source_gsd=config.get('source_gsd'),
+                                    target_gsd=config.get('target_gsd'),
                                     **dataset_kwargs)
     val_dataset_s1 = DatasetClass(config['data_root'], split='valid',
                                   img_size=config.get('img_size', 512), aug=False,
                                   preload=preload, skip_edges=True,
                                   normalize_mean=config.get('normalize_mean'),
                                   normalize_std=config.get('normalize_std'),
+                                  source_gsd=config.get('source_gsd'),
+                                  target_gsd=config.get('target_gsd'),
                                   **dataset_kwargs)
 
     train_loader_s1 = DataLoader(
@@ -543,12 +547,16 @@ def main():
                                     preload=preload, skip_edges=False,
                                     normalize_mean=config.get('normalize_mean'),
                                     normalize_std=config.get('normalize_std'),
+                                    source_gsd=config.get('source_gsd'),
+                                    target_gsd=config.get('target_gsd'),
                                     **dataset_kwargs)
     val_dataset_s2 = DatasetClass(config['data_root'], split='valid',
                                   img_size=config.get('img_size', 512), aug=False,
                                   preload=preload, skip_edges=False,
                                   normalize_mean=config.get('normalize_mean'),
                                   normalize_std=config.get('normalize_std'),
+                                  source_gsd=config.get('source_gsd'),
+                                  target_gsd=config.get('target_gsd'),
                                   **dataset_kwargs)
 
     train_loader_s2 = DataLoader(

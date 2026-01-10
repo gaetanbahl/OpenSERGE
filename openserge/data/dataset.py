@@ -22,7 +22,8 @@ class RoadGraphDataset(Dataset):
     def __init__(self, data_root: str, split: str = 'train', img_size: int = 512,
                  stride: int = 32, aug: bool = True, preload: bool = False,
                  skip_edges: bool = False, normalize_mean: Tuple[float, float, float] = None,
-                 normalize_std: Tuple[float, float, float] = None):
+                 normalize_std: Tuple[float, float, float] = None,
+                 source_gsd: Optional[float] = None, target_gsd: Optional[float] = None):
         """
         Args:
             data_root: Path to dataset directory
@@ -34,6 +35,8 @@ class RoadGraphDataset(Dataset):
             skip_edges: Whether to skip edge extraction (default False)
             normalize_mean: Mean for normalization (default None = no normalization)
             normalize_std: Std for normalization (default None = no normalization)
+            source_gsd: Source ground sampling distance in meters/pixel (e.g., 1.0 for CityScale)
+            target_gsd: Target ground sampling distance in meters/pixel (resample to this GSD)
         """
         self.root = data_root
         self.split = split
@@ -44,6 +47,19 @@ class RoadGraphDataset(Dataset):
         self.normalize_mean = normalize_mean
         self.normalize_std = normalize_std
         self.skip_edges = skip_edges
+        self.source_gsd = source_gsd
+        self.target_gsd = target_gsd
+
+        # Compute GSD scale factor once (used for coordinate transforms)
+        if source_gsd is not None and target_gsd is not None and source_gsd != target_gsd:
+            self.gsd_scale_factor = source_gsd / target_gsd
+            print(f"GSD resampling enabled: {source_gsd}m -> {target_gsd}m (scale={self.gsd_scale_factor:.3f})")
+
+            # Memory warning for large upsampling
+            if self.gsd_scale_factor > 2.0:
+                print(f"WARNING: Large upsampling factor {self.gsd_scale_factor:.1f}x may use significant memory")
+        else:
+            self.gsd_scale_factor = 1.0
 
         # To be populated by subclass
         self.samples = []
@@ -96,12 +112,19 @@ class RoadGraphDataset(Dataset):
                 raise ValueError(f"Failed to load image: {sample_info['img_path']}")
             raw_img = cv2.cvtColor(raw_img, cv2.COLOR_BGR2RGB)
 
+            # Apply GSD resampling at preload time
+            if self.gsd_scale_factor != 1.0:
+                h, w = raw_img.shape[:2]
+                new_h = int(h * self.gsd_scale_factor)
+                new_w = int(w * self.gsd_scale_factor)
+                raw_img = cv2.resize(raw_img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
             # Load graph
             graph = self._load_graph(sample_info['graph_path'])
 
             # Store raw data - preprocessing will be done in __getitem__
             preloaded_item = {
-                'raw_image': raw_img,  # Store raw, not preprocessed
+                'raw_image': raw_img,  # Store raw (with GSD resampling if enabled), not preprocessed
                 'graph': graph
             }
             preloaded_item.update(sample_info)  # Include original sample info
@@ -337,6 +360,15 @@ class CityScale(RoadGraphDataset):
             img = cv2.imread(sample_info["img_path"], cv2.IMREAD_COLOR)
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
+        # GSD RESAMPLING - MUST BE FIRST (before cropping)
+        gsd_scale_factor = 1.0
+        if self.gsd_scale_factor != 1.0:
+            original_h, original_w = img.shape[:2]
+            new_h = int(original_h * self.gsd_scale_factor)
+            new_w = int(original_w * self.gsd_scale_factor)
+            img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            gsd_scale_factor = self.gsd_scale_factor
+
         H, W = img.shape[:2]
 
         # Random crop for training, center crop otherwise
@@ -362,7 +394,7 @@ class CityScale(RoadGraphDataset):
             'crop_x0': x0,
             'crop_h': crop_h,
             'crop_w': crop_w,
-            'scale_factor': 1.0
+            'scale_factor': gsd_scale_factor
         }
 
         return crop, preprocessing_info
@@ -392,10 +424,11 @@ class GlobalScale(RoadGraphDataset):
                  stride: int = 32, aug: bool = True, preload: bool = False,
                  skip_edges: bool = False, use_refined: bool = True,
                  normalize_mean: Tuple[float, float, float] = None,
-                 normalize_std: Tuple[float, float, float] = None):
+                 normalize_std: Tuple[float, float, float] = None,
+                 source_gsd: Optional[float] = None, target_gsd: Optional[float] = None):
         self.use_refined = use_refined
         super().__init__(data_root, split, img_size, stride, aug, preload, skip_edges,
-                        normalize_mean, normalize_std)
+                        normalize_mean, normalize_std, source_gsd, target_gsd)
 
     def _discover_samples(self):
         """Discover GlobalScale samples."""
@@ -452,6 +485,15 @@ class GlobalScale(RoadGraphDataset):
             img = cv2.imread(sample_info["img_path"], cv2.IMREAD_COLOR)
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
+        # GSD RESAMPLING - MUST BE FIRST (before cropping)
+        gsd_scale_factor = 1.0
+        if self.gsd_scale_factor != 1.0:
+            original_h, original_w = img.shape[:2]
+            new_h = int(original_h * self.gsd_scale_factor)
+            new_w = int(original_w * self.gsd_scale_factor)
+            img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            gsd_scale_factor = self.gsd_scale_factor
+
         H, W = img.shape[:2]
 
         # Random crop for training, center crop otherwise
@@ -477,7 +519,7 @@ class GlobalScale(RoadGraphDataset):
             'crop_x0': x0,
             'crop_h': crop_h,
             'crop_w': crop_w,
-            'scale_factor': 1.0
+            'scale_factor': gsd_scale_factor
         }
 
         return crop, preprocessing_info
@@ -510,11 +552,12 @@ class SpaceNet(RoadGraphDataset):
                  skip_edges: bool = False, use_dense: bool = True,
                  split_file: Optional[str] = None,
                  normalize_mean: Tuple[float, float, float] = None,
-                 normalize_std: Tuple[float, float, float] = None):
+                 normalize_std: Tuple[float, float, float] = None,
+                 source_gsd: Optional[float] = None, target_gsd: Optional[float] = None):
         self.use_dense = use_dense
         self.split_file = split_file or os.path.join(data_root, 'dataset.json')
         super().__init__(data_root, split, img_size, stride, aug, preload, skip_edges,
-                        normalize_mean, normalize_std)
+                        normalize_mean, normalize_std, source_gsd, target_gsd)
 
     def _discover_samples(self):
         """Discover SpaceNet samples."""
@@ -560,19 +603,31 @@ class SpaceNet(RoadGraphDataset):
 
         original_h, original_w = img.shape[:2]
 
-        # Resize to target size
+        # STEP 1: Apply GSD resampling FIRST (if enabled)
+        gsd_scale_factor = 1.0
+        if self.gsd_scale_factor != 1.0:
+            gsd_h = int(original_h * self.gsd_scale_factor)
+            gsd_w = int(original_w * self.gsd_scale_factor)
+            img = cv2.resize(img, (gsd_w, gsd_h), interpolation=cv2.INTER_LINEAR)
+            gsd_scale_factor = self.gsd_scale_factor
+
+        # STEP 2: Resize to target img_size (existing SpaceNet behavior)
+        w = img.shape[1]
         img_resized = cv2.resize(img, (self.img_size, self.img_size),
                                 interpolation=cv2.INTER_LINEAR)
 
-        # Calculate scale factor for graph coordinates
-        scale_factor = self.img_size / original_w
+        # COMBINED scale factor for graph coordinates
+        # Example: GSD 0.3m -> 1.0m gives gsd_scale=0.3, then resize 390->512 gives resize_scale=1.31
+        # Total scale = 0.3 * 1.31 = 0.39
+        resize_scale_factor = self.img_size / w
+        combined_scale_factor = gsd_scale_factor * resize_scale_factor
 
         preprocessing_info = {
             'crop_y0': 0,
             'crop_x0': 0,
             'crop_h': self.img_size,
             'crop_w': self.img_size,
-            'scale_factor': scale_factor,
+            'scale_factor': combined_scale_factor,
             'original_size': (original_h, original_w),
             'flip_y_height': original_h  # For flipping Y coordinates
         }
@@ -636,7 +691,8 @@ class RoadTracer(RoadGraphDataset):
                  stride: int = 32, aug: bool = True, preload: bool = False,
                  skip_edges: bool = False, val_percent: float = 0.15,
                  normalize_mean: Tuple[float, float, float] = None,
-                 normalize_std: Tuple[float, float, float] = None):
+                 normalize_std: Tuple[float, float, float] = None,
+                 source_gsd: Optional[float] = None, target_gsd: Optional[float] = None):
         """
         Args:
             val_percent: Percentage of training cities to use for validation (default 0.15 = 15%)
@@ -650,7 +706,7 @@ class RoadTracer(RoadGraphDataset):
         }
         self.val_percent = val_percent
         super().__init__(data_root, split, img_size, stride, aug, preload, skip_edges,
-                        normalize_mean, normalize_std)
+                        normalize_mean, normalize_std, source_gsd, target_gsd)
 
     def _parse_city_from_filename(self, filename: str) -> str:
         """Extract city name from filename like 'chicago_-1_0_sat.png'."""
@@ -845,6 +901,15 @@ class RoadTracer(RoadGraphDataset):
                 raise FileNotFoundError(f"Could not load image: {sample_info['img_path']}")
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
+        # GSD RESAMPLING - MUST BE FIRST (before cropping)
+        gsd_scale_factor = 1.0
+        if self.gsd_scale_factor != 1.0:
+            original_h, original_w = img.shape[:2]
+            new_h = int(original_h * self.gsd_scale_factor)
+            new_w = int(original_w * self.gsd_scale_factor)
+            img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            gsd_scale_factor = self.gsd_scale_factor
+
         H, W = img.shape[:2]
 
         # Random crop for training, center crop otherwise
@@ -870,7 +935,7 @@ class RoadTracer(RoadGraphDataset):
             'crop_x0': x0,
             'crop_h': crop_h,
             'crop_w': crop_w,
-            'scale_factor': 1.0
+            'scale_factor': gsd_scale_factor
         }
 
         return crop, preprocessing_info

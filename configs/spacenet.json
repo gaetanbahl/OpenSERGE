@@ -4,6 +4,8 @@
   "data_root": "data/spacenet",
   "split_file": "data/Sat2Graph/data/spacenet/dataset.json",
   "img_size": 512,
+  "source_gsd": 0.3,
+  "target_gsd": 0.3,
   "preload": false,
   "use_dense": true,
 

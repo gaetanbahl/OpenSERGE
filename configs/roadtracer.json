@@ -3,6 +3,8 @@
   "dataset": "roadtracer",
   "data_root": "data/roadtracer/dataset",
   "img_size": 512,
+  "source_gsd": 0.6,
+  "target_gsd": 1.0,
   "preload": false,
   "val_percent": 0.15,
 

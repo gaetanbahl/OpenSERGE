@@ -3,6 +3,8 @@
   "dataset": "cityscale",
   "data_root": "data/Sat2Graph/data/",
   "img_size": 512,
+  "source_gsd": 1.0,
+  "target_gsd": 1.0,
   "preload": false,
 
   "backbone": "resnet50d.a1_in1k",
@@ -44,7 +46,7 @@
   "wandb_entity": null,
   "wandb_run_name": null,
   "wandb_tags": ["cityscale"],
-  "disable_wandb": false,
+  "disable_wandb": true,
   "device": "cuda",
   "num_workers": 12,
   "seed": 42

@@ -1,0 +1,53 @@
+{
+  "experiment_name": "cityscale_ablations_convnext_tiny",
+  "dataset": "cityscale",
+  "data_root": "data/Sat2Graph/data/",
+  "img_size": 512,
+  "source_gsd": 1.0,
+  "target_gsd": 1.0,
+  "preload": true,
+
+  "backbone": "convnext_tiny.dinov3_lvd1689m",
+  "k": null,
+  "use_fpn": true,
+  "use_pos_encoding": true,
+
+  "stage1_epochs": 1000,
+  "stage1_patience": 100,
+  "stage2_epochs": 1000,
+  "stage2_patience": 100,
+  "stage3_epochs": 2000,
+  "stage3_patience": 200,
+  "stage3_lr_factor": 0.3,
+
+  "freeze_backbone_stage1": true,
+  "freeze_backbone_stage2": true,
+  "freeze_backbone_stage3": false,
+
+  "use_gt_junctions_stage1": false,
+  "use_gt_junctions_stage2": true,
+  "use_gt_junctions_stage3": false,
+
+  "batch_size": 4,
+  "lr": 0.001,
+  "weight_decay": 0.0001,
+  "junction_thresh": 0.5,
+
+  "loss_weight_junction": 1.0,
+  "loss_weight_offset": 10.0,
+  "loss_weight_edge": 1.0,
+
+  "min_delta": 0.0001,
+  "checkpoint_dir": "checkpoints",
+  "save_freq": 200,
+  "resume": null,
+  "log_dir": "logs",
+  "wandb_project": "openserge_cityscale_ablations",
+  "wandb_entity": null,
+  "wandb_run_name": null,
+  "wandb_tags": ["cityscale"],
+  "disable_wandb": false,
+  "device": "cuda",
+  "num_workers": 16,
+  "seed": 42
+}

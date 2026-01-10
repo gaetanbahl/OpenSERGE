@@ -261,7 +261,8 @@ def train_stage(stage_num, model, train_loader, val_loader, optimizer, device, c
         if epoch % config.get('save_freq', 5) == 0 or is_best:
             save_path = checkpoint_dir / f'stage{stage_num}_epoch{epoch}.pt'
             save_checkpoint(model, optimizer, epoch, config, save_path,
-                          is_best, train_losses, val_losses)
+                          is_best, train_losses, val_losses,
+                          best_path_suffix=f'stage{stage_num}_best.pt')
             logger.info(f"Saved checkpoint: {save_path}")
 
             if not config.get('disable_wandb', False) and is_best:
@@ -519,6 +520,16 @@ def main():
         global_step_offset=0
     )
 
+    # Restore best weights from stage 1 before moving to stage 2
+    stage1_best_path = checkpoint_dir / 'stage1_best.pt'
+    if stage1_best_path.exists():
+        logger.info(f"Restoring best stage 1 weights from {stage1_best_path}")
+        checkpoint = torch.load(stage1_best_path, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        logger.info(f"Stage 1 best validation loss: {best_val_loss_s1:.4f}")
+    else:
+        logger.warning(f"Stage 1 best checkpoint not found at {stage1_best_path}, using current weights")
+
     # =========================================================================
     # STAGE 2: GNN Training (CNN frozen by default)
     # =========================================================================
@@ -603,6 +614,16 @@ def main():
         patience=config.get('stage2_patience', 100),
         global_step_offset=global_step_s1
     )
+
+    # Restore best weights from stage 2 before moving to stage 3
+    stage2_best_path = checkpoint_dir / 'stage2_best.pt'
+    if stage2_best_path.exists():
+        logger.info(f"Restoring best stage 2 weights from {stage2_best_path}")
+        checkpoint = torch.load(stage2_best_path, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        logger.info(f"Stage 2 best validation loss: {best_val_loss_s2:.4f}")
+    else:
+        logger.warning(f"Stage 2 best checkpoint not found at {stage2_best_path}, using current weights")
 
     # =========================================================================
     # STAGE 3: Full Model Fine-tuning (reduced LR)

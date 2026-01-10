@@ -6,8 +6,13 @@ import torch
 
 
 def save_checkpoint(model, optimizer, epoch, config, save_path, is_best=False,
-                   train_losses=None, val_losses=None):
-    """Save model checkpoint."""
+                   train_losses=None, val_losses=None, best_path_suffix='best_model.pt'):
+    """Save model checkpoint.
+
+    Args:
+        best_path_suffix: Suffix for best model file (default: 'best_model.pt').
+                         Can be stage-specific like 'stage1_best.pt'
+    """
     checkpoint = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
@@ -20,7 +25,7 @@ def save_checkpoint(model, optimizer, epoch, config, save_path, is_best=False,
     torch.save(checkpoint, save_path)
 
     if is_best:
-        best_path = save_path.parent / 'best_model.pt'
+        best_path = save_path.parent / best_path_suffix
         torch.save(checkpoint, best_path)
 
 

@@ -23,7 +23,7 @@ N_JOBS="${2:-8}"  # Number of parallel jobs
 EVAL_SPLIT="${3:-all}"  # Which split to evaluate: 'train', 'valid', 'test', or 'all' (default)
 DATA_ROOT="data/Sat2Graph/data/20cities"
 SPLIT_FILE="data/Sat2Graph/data/data_split.json"
-OUTPUT_ROOT="evaluation_results_residual"
+OUTPUT_ROOT="${4:-evaluation_results}"
 STRIDE=384
 IMG_SIZE=512
 JUNCTION_THRESH=0.5
@@ -192,7 +192,7 @@ if command -v parallel &> /dev/null; then
     cat /tmp/images_to_process.txt | parallel -j $N_JOBS --progress run_inference
 else
     echo "GNU parallel not found, using xargs (less efficient)..."
-    cat /tmp/images_to_process.txt | xargs -P $N_JOBS -I {} bash -c 'run_inference "$@"' _ {}
+    cat /tmp/images_to_process.txt | xargs -I {} bash -c 'run_inference "$@"' _ {}
 fi
 
 echo ""

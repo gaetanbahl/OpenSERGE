@@ -69,6 +69,12 @@ def parse_args():
     ap.add_argument('--merge_threshold', type=float, default=16.0,
                     help='Distance threshold (pixels) for merging duplicate nodes')
 
+    # GSD resampling parameters
+    ap.add_argument('--source_gsd', type=float, default=None,
+                    help='Source GSD in meters/pixel (default: read from model config)')
+    ap.add_argument('--target_gsd', type=float, default=None,
+                    help='Target GSD in meters/pixel to resample to (default: read from model config)')
+
     # Visualization parameters
     ap.add_argument('--node_color', type=str, default='red',
                     help='Node color for visualization')
@@ -89,7 +95,7 @@ def parse_args():
     return ap.parse_args()
 
 
-def load_model(checkpoint_path: str, k: Optional[int], backbone: str, device: torch.device, logger) -> Tuple[OpenSERGE, Tuple, Tuple]:
+def load_model(checkpoint_path: str, k: Optional[int], backbone: str, device: torch.device, logger) -> Tuple[OpenSERGE, Optional[Tuple], Optional[Tuple], Optional[float], Optional[float]]:
     """
     Load model from checkpoint.
 
@@ -101,10 +107,12 @@ def load_model(checkpoint_path: str, k: Optional[int], backbone: str, device: to
         logger: Logger instance
 
     Returns:
-        (model, normalize_mean, normalize_std) where:
+        (model, normalize_mean, normalize_std, source_gsd, target_gsd) where:
             model: Loaded OpenSERGE model in eval mode
             normalize_mean: Normalization mean (or None)
             normalize_std: Normalization std (or None)
+            source_gsd: Source GSD from config (or None)
+            target_gsd: Target GSD from config (or None)
     """
     logger.info(f"Loading checkpoint from {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -123,6 +131,10 @@ def load_model(checkpoint_path: str, k: Optional[int], backbone: str, device: to
     normalize_mean = config.get('normalize_mean')
     normalize_std = config.get('normalize_std')
 
+    # Extract GSD parameters from config
+    source_gsd = config.get('source_gsd')
+    target_gsd = config.get('target_gsd')
+
     logger.info(f"Model configuration:")
     logger.info(f"  Backbone: {model_backbone}")
     logger.info(f"  k: {model_k if model_k is not None else 'complete graph'}")
@@ -133,6 +145,8 @@ def load_model(checkpoint_path: str, k: Optional[int], backbone: str, device: to
         logger.info(f"  Normalization: mean={normalize_mean}, std={normalize_std}")
     else:
         logger.info(f"  Normalization: None (using [0,1] scaling)")
+    if source_gsd is not None and target_gsd is not None:
+        logger.info(f"  GSD: source={source_gsd}m, target={target_gsd}m")
 
     if 'epoch' in checkpoint:
         logger.info(f"  Checkpoint epoch: {checkpoint['epoch']}")
@@ -152,7 +166,7 @@ def load_model(checkpoint_path: str, k: Optional[int], backbone: str, device: to
     num_params = sum(p.numel() for p in model.parameters())
     logger.info(f"  Parameters: {num_params:,}")
 
-    return model, normalize_mean, normalize_std
+    return model, normalize_mean, normalize_std, source_gsd, target_gsd
 
 
 def load_image(image_path: str, logger) -> np.ndarray:
@@ -529,11 +543,31 @@ def main():
 
     logger.info(f"Using device: {device}")
 
-    # Load model
-    model, normalize_mean, normalize_std = load_model(args.weights, args.k, args.backbone, device, logger)
+    # Load model and get GSD config
+    model, normalize_mean, normalize_std, config_source_gsd, config_target_gsd = load_model(
+        args.weights, args.k, args.backbone, device, logger)
+
+    # Determine GSD values (command-line overrides config)
+    source_gsd = args.source_gsd if args.source_gsd is not None else config_source_gsd
+    target_gsd = args.target_gsd if args.target_gsd is not None else config_target_gsd
 
     # Load image
     img = load_image(args.image, logger)
+    original_h, original_w = img.shape[:2]
+    logger.info(f"Original image size: {original_w}x{original_h}")
+
+    # Apply GSD resampling if needed
+    gsd_scale_factor = 1.0
+    if source_gsd is not None and target_gsd is not None and source_gsd != target_gsd:
+        gsd_scale_factor = source_gsd / target_gsd
+        logger.info(f"GSD resampling: {source_gsd}m -> {target_gsd}m (scale={gsd_scale_factor:.3f})")
+
+        new_h = int(original_h * gsd_scale_factor)
+        new_w = int(original_w * gsd_scale_factor)
+        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        logger.info(f"Resampled image size: {new_w}x{new_h}")
+    else:
+        logger.info("No GSD resampling (source_gsd == target_gsd or not specified)")
 
     # Extract tiles
     tiles = extract_tiles(img, args.img_size, args.stride, logger)
@@ -554,12 +588,33 @@ def main():
     logger.info("Merging graphs and deduplicating nodes...")
     graph = merge_graphs(tile_results, args.merge_threshold, logger)
 
-    # Save graph
+    # Scale coordinates back to original resolution if GSD resampling was applied
+    if gsd_scale_factor != 1.0:
+        logger.info(f"Scaling output coordinates back to original resolution (factor={1.0/gsd_scale_factor:.3f})...")
+        inverse_scale = 1.0 / gsd_scale_factor
+
+        # Scale node coordinates
+        if len(graph['nodes']) > 0:
+            scaled_nodes = []
+            for x, y in graph['nodes']:
+                scaled_nodes.append([x * inverse_scale, y * inverse_scale])
+            graph['nodes'] = scaled_nodes
+
+        logger.info(f"Coordinates scaled back to original {original_w}x{original_h} image")
+
+    # Save graph (with original-resolution coordinates)
     save_graph(graph, args.output, logger)
 
-    # Optionally save visualization
+    # Optionally save visualization (scaled back to original resolution)
     if args.output_image:
-        visualize_graph(img, graph, args.output_image,
+        # Scale visualization image back to original size
+        if gsd_scale_factor != 1.0:
+            logger.info(f"Scaling visualization image back to original resolution...")
+            vis_img_resized = cv2.resize(img, (original_w, original_h), interpolation=cv2.INTER_LINEAR)
+        else:
+            vis_img_resized = img
+
+        visualize_graph(vis_img_resized, graph, args.output_image,
                        args.node_color, args.edge_color,
                        args.node_size, args.edge_width, logger)
 

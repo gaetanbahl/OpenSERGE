@@ -1,0 +1,109 @@
+version: '3.8'
+
+services:
+  openserge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: openserge:latest
+    container_name: openserge
+
+    # GPU access
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    # Environment variables
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - PYTHONUNBUFFERED=1
+      - JUPYTER_ENABLE_LAB=yes
+
+    # Port mappings
+    ports:
+      - "8888:8888"  # Jupyter Lab
+      - "6006:6006"  # TensorBoard
+
+    # Volume mappings
+    volumes:
+      # Data directory (read-only for safety)
+      - ./data:/workspace/openserge/data:ro
+
+      # Checkpoints and models (read-write)
+      - ./checkpoints:/workspace/openserge/checkpoints
+
+      # Logs and outputs (read-write)
+      - ./logs:/workspace/openserge/logs
+      - ./evaluation_results:/workspace/openserge/evaluation_results
+      - ./roadtracer_evaluation_results:/workspace/openserge/roadtracer_evaluation_results
+      - ./globalscale_evaluation_results:/workspace/openserge/globalscale_evaluation_results
+
+      # Notebooks (read-write)
+      - ./notebooks:/workspace/openserge/notebooks
+
+      # Config files (read-only)
+      - ./configs:/workspace/openserge/configs:ro
+
+    # Shared memory size (important for PyTorch DataLoaders)
+    shm_size: '16gb'
+
+    # Keep container running
+    tty: true
+    stdin_open: true
+
+    # Default command (can be overridden)
+    command: jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''
+
+    # Resource limits (optional, adjust based on your system)
+    # mem_limit: 64g
+    # cpus: 16
+
+  # Optional: TensorBoard service
+  tensorboard:
+    image: openserge:latest
+    container_name: openserge-tensorboard
+    depends_on:
+      - openserge
+    ports:
+      - "6007:6006"
+    volumes:
+      - ./logs:/workspace/openserge/logs:ro
+    command: tensorboard --logdir=/workspace/openserge/logs --host=0.0.0.0 --port=6006
+    profiles:
+      - tensorboard
+
+# Usage:
+#
+# Start all services:
+#   docker-compose up -d
+#
+# Start with TensorBoard:
+#   docker-compose --profile tensorboard up -d
+#
+# View logs:
+#   docker-compose logs -f openserge
+#
+# Execute training:
+#   docker-compose exec openserge python -m openserge.train --config configs/cityscale.json
+#
+# Execute inference:
+#   docker-compose exec openserge python -m openserge.infer \
+#     --weights checkpoints/best_model.pt \
+#     --image data/test.png \
+#     --output results/graph.json
+#
+# Run evaluation:
+#   docker-compose exec openserge bash scripts/run_cityscale_evaluation.sh checkpoints/best_model.pt 8 test
+#
+# Interactive shell:
+#   docker-compose exec openserge bash
+#
+# Stop services:
+#   docker-compose down
+#
+# Rebuild image:
+#   docker-compose build --no-cache

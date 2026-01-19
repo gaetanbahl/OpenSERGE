@@ -42,7 +42,7 @@ cd ..
 Both metrics are automatically called by our evaluation pipeline:
 
 ```bash
-./scripts/run_full_evaluation.sh checkpoints/best_model.pt 8 test
+./scripts/run_cityscale_evaluation.sh checkpoints/best_model.pt 8 test
 ```
 
 For manual usage of individual metrics, see their respective README files.

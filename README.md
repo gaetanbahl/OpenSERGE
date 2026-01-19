@@ -31,6 +31,14 @@ This paradigm achieves **up to 91× faster inference** than iterative methods wh
 - ✅ **GSD normalization**: Automatic resampling for consistent spatial resolution
 - ✅ **Production-ready**: Docker support, comprehensive evaluation scripts, pre-trained weights
 
+### News
+
+2026-01-19 - First release of OpenSERGE code with CityScale checkpoints.
+
+### Next steps
+
+See ![TODO.md](TODO.md)
+
 ---
 
 ## 🚀 Quick Start
@@ -99,8 +107,6 @@ python -m openserge.infer \
 ---
 
 ## 📊 Results and Pre-trained Models
-
-**TODO: Add table with metrics (TOPO, APLS, J-F1, P-F1) and download links for checkpoints**
 
 | Dataset | Backbone | TOPO | APLS | J-F1 | P-F1 | Checkpoint |
 |---------|----------|------|------|------|------|------------|

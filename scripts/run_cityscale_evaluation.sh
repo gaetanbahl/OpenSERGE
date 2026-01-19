@@ -1,10 +1,10 @@
 #!/bin/bash
-# Full evaluation script for OpenSERGE on Sat2Graph dataset
+# CityScale evaluation script for OpenSERGE on Sat2Graph dataset
 # Runs inference on selected regions and computes averaged TOPO and APLS metrics
 # Supports parallel processing for faster execution
 #
 # Usage:
-#   ./scripts/run_full_evaluation.sh [WEIGHTS] [N_JOBS] [EVAL_SPLIT]
+#   ./scripts/run_cityscale_evaluation.sh [WEIGHTS] [N_JOBS] [EVAL_SPLIT]
 #
 # Arguments:
 #   WEIGHTS     - Path to model checkpoint (default: checkpoints/best_model.pt)
@@ -12,8 +12,8 @@
 #   EVAL_SPLIT  - Dataset split to evaluate: 'train', 'valid', 'test', or 'all' (default: all)
 #
 # Examples:
-#   ./scripts/run_full_evaluation.sh checkpoints/best_model.pt 8 test
-#   ./scripts/run_full_evaluation.sh checkpoints/best_model.pt 4 valid
+#   ./scripts/run_cityscale_evaluation.sh checkpoints/best_model.pt 8 test
+#   ./scripts/run_cityscale_evaluation.sh checkpoints/best_model.pt 4 valid
 
 set -e  # Exit on error
 

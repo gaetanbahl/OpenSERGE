@@ -41,6 +41,25 @@ See ![TODO.md](TODO.md)
 
 ---
 
+## 📚 Citation
+
+If you use OpenSERGE in your research, please cite the original SERGE paper:
+
+```bibtex
+@InProceedings{Bahl_2022_CVPR,
+    author    = {Bahl, Gaetan and Bahri, Mehdi and Lafarge, Florent},
+    title     = {Single-Shot End-to-End Road Graph Extraction},
+    booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) Workshops},
+    month     = {June},
+    year      = {2022},
+    pages     = {1403-1412}
+}
+```
+
+**Original paper**: [CVF Open Access](https://openaccess.thecvf.com/content/CVPR2022W/EarthVision/html/Bahl_Single-Shot_End-to-End_Road_Graph_Extraction_CVPRW_2022_paper.html)
+
+---
+
 ## 🚀 Quick Start
 
 ### Installation
@@ -749,24 +768,6 @@ See [DOCKER.md](DOCKER.md) for comprehensive Docker documentation including GPU 
 
 ---
 
-## 📚 Citation
-
-If you use OpenSERGE in your research, please cite the original SERGE paper:
-
-```bibtex
-@InProceedings{Bahl_2022_CVPR,
-    author    = {Bahl, Gaetan and Bahri, Mehdi and Lafarge, Florent},
-    title     = {Single-Shot End-to-End Road Graph Extraction},
-    booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) Workshops},
-    month     = {June},
-    year      = {2022},
-    pages     = {1403-1412}
-}
-```
-
-**Original paper**: [CVF Open Access](https://openaccess.thecvf.com/content/CVPR2022W/EarthVision/html/Bahl_Single-Shot_End-to-End_Road_Graph_Extraction_CVPRW_2022_paper.html)
-
----
 
 ## 🤝 Contributing
 

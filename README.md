@@ -108,12 +108,22 @@ python -m openserge.infer \
 
 ## 📊 Results and Pre-trained Models
 
-| Dataset | Backbone | TOPO | APLS | J-F1 | P-F1 | Checkpoint |
-|---------|----------|------|------|------|------|------------|
-| CityScale | ResNet50d | TBD | TBD | TBD | TBD | [Download](#) |
-| GlobalScale | ResNet50d | TBD | TBD | TBD | TBD | [Download](#) |
-| RoadTracer | ResNet50d | TBD | TBD | TBD | TBD | [Download](#) |
-| SpaceNet | ResNet50d | TBD | TBD | TBD | TBD | [Download](#) |
+### CityScale dataset
+
+| Backbone                         | TOPO Precision | TOPO Recall | TOPO F1 | APLS   | Checkpoint |
+|----------------------------------|----------------|-------------|---------|--------|------------|
+| resnet50d.a1_in1k                | 55.30          | 71.32       | 62.02   | 59.17  | [Download](https://huggingface.co/gaetanbahl/openserge_cityscale_resnet50d.a1_in1k) |
+| resnet101.a1_in1k.               | 62.39          | 68.25       | 64.80   | 58.25  | [Download](https://huggingface.co/gaetanbahl/openserge_cityscale_resnet101.a1_in1k) |
+| vit_large_patch16_dinov3.sat493m | 63.78          | 71.68       | 67.24   | 62.30  | [Download](https://huggingface.co/gaetanbahl/openserge_cityscale_vit_large_patch16_dinov3.sat493m) |
+
+Note: metrics were evaluated at 0.3 edge treshold and 0.3 junction threshold.
+
+
+| Dataset | Backbone | TOPO Precision | TOPO Recall | TOPO F1 | APLS | Checkpoint |
+|---------|----------|----------------|-------------|---------|------|------------|
+| GlobalScale | ResNet50d | TBD | TBD | TBD | TBD | TBD |
+| RoadTracer | ResNet50d | TBD | TBD | TBD | TBD | TBD |
+| SpaceNet | ResNet50d | TBD | TBD | TBD | TBD | TBD |
 
 ---
 

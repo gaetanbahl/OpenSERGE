@@ -17,7 +17,7 @@ Unlike traditional approaches that rely on pixel-level segmentation followed by 
 - A **Fully Convolutional Network** (CNN) that detects road junctions and predicts precise 2D offsets
 - A lightweight **Graph Neural Network** (GNN) that predicts connectivity between detected junctions
 
-This paradigm achieves **up to 91× faster inference** than iterative methods while maintaining competitive accuracy, making it ideal for real-time applications such as disaster response and embedded systems.
+This paradigm achieves **up to 500× faster inference** (from **hours** to **SECONDS**) than iterative methods like RNGDet++ and up to 8× faster than state-of-the-art segmentation-based methods like SAM-Road while maintaining competitive accuracy, making it ideal for real-time applications such as disaster response and embedded systems.
 
 ![OpenSERGE Architecture](images/SERGE_arch.png)
 
